@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<!-- Declare both schemes so the browser stops applying its own auto-dark rewrite and
+     native controls (scrollbars, number spinners) follow the theme we pick below. -->
+<meta name="color-scheme" content="light dark" />
+<title>ComfyFleet</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%230A84FF'/><path d='M28 62l14-28 14 20 8-12 8 20z' fill='white'/></svg>" />
+<script src="/vendor/tailwind.js"></script>
+<style type="text/tailwindcss">
+  @custom-variant dark (&:where(.dark, .dark *));
+  @theme {
+    --color-ios-blue: #007aff;
+    --color-ios-blue-dark: #0a84ff;
+    --color-ios-green: #34c759;
+    --color-ios-red: #ff3b30;
+    --color-ios-orange: #ff9500;
+    --color-ios-gray: #8e8e93;
+    --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text",
+      "Segoe UI", system-ui, "Helvetica Neue", sans-serif;
+    --font-mono: "SF Mono", ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  }
+</style>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+
+<body class="h-full bg-[#f2f2f7] text-[#1c1c1e] dark:bg-black dark:text-[#f2f2f7] font-sans antialiased">
+
+<!-- ───────────────────────────────── header ───────────────────────────────── -->
+<header class="sticky top-0 z-30 border-b border-black/8 dark:border-white/10
+               bg-white/72 dark:bg-[#1c1c1e]/72 backdrop-blur-xl backdrop-saturate-150">
+  <div class="mx-auto max-w-7xl px-5 sm:px-8">
+    <div class="flex items-center gap-3 py-3">
+      <div class="grid size-9 place-items-center rounded-[10px] bg-gradient-to-b from-[#0a84ff] to-[#0060df] shadow-sm">
+        <svg viewBox="0 0 100 100" class="size-5 fill-white"><path d="M20 68l18-36 18 26 10-15 14 25z"/></svg>
+      </div>
+      <div class="min-w-0">
+        <h1 class="text-[17px] font-semibold leading-tight tracking-[-0.01em]">ComfyFleet</h1>
+        <p class="truncate text-[12px] leading-tight text-ios-gray">One workflow, every GPU on the network</p>
+      </div>
+
+      <div class="ml-auto flex items-center gap-2">
+        <span id="fleet-summary" class="hidden sm:inline-flex items-center gap-1.5 rounded-full bg-black/5 dark:bg-white/10
+                     px-3 py-1.5 text-[12px] font-medium text-ios-gray">
+          <span class="size-1.5 rounded-full bg-ios-gray"></span><span data-count>no machines</span>
+        </span>
+        <button id="theme-toggle" title="Appearance"
+                class="grid size-9 place-items-center rounded-full bg-black/5 hover:bg-black/10
+                       dark:bg-white/10 dark:hover:bg-white/15 transition active:scale-95">
+          <svg class="size-[18px] fill-current opacity-70" viewBox="0 0 24 24"><path d="M12 18a6 6 0 1 1 0-12 6 6 0 0 1 0 12Zm0-2a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-1-13h2v3h-2V3Zm0 15h2v3h-2v-3ZM3 11h3v2H3v-2Zm15 0h3v2h-3v-2ZM5.6 4.2 7 5.6 5.6 7 4.2 5.6l1.4-1.4Zm11.4 11.4 1.4 1.4-1.4 1.4-1.4-1.4 1.4-1.4Zm1.4-11.4L19.8 5.6 18.4 7 17 5.6l1.4-1.4ZM7 17l1.4 1.4L7 19.8l-1.4-1.4L7 17Z"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- segmented control -->
+    <nav class="pb-3">
+      <div id="tabs" class="segmented" role="tablist">
+        <button class="seg-item" data-tab="machines" aria-selected="true">
+          <span class="seg-num">1</span>Machines
+        </button>
+        <button class="seg-item" data-tab="workflow" aria-selected="false">
+          <span class="seg-num">2</span>Workflow
+        </button>
+        <button class="seg-item" data-tab="output" aria-selected="false">
+          <span class="seg-num">3</span>Output
+        </button>
+        <div class="seg-thumb" aria-hidden="true"></div>
+      </div>
+    </nav>
+  </div>
+</header>
+
+<!-- ───────────────────────────────── panels ───────────────────────────────── -->
+<main class="mx-auto max-w-7xl px-5 sm:px-8 pb-[280px] pt-6">
+
+  <!-- ============================ 1. MACHINES ============================ -->
+  <section data-panel="machines" class="space-y-4">
+    <div class="flex flex-wrap items-center gap-2">
+      <button class="btn-primary" data-action="add-machine">
+        <svg class="size-4 fill-current" viewBox="0 0 24 24"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5Z"/></svg>
+        Add machine
+      </button>
+      <button class="btn-secondary" data-action="discover">Find on network</button>
+      <button class="btn-secondary" data-action="refresh-status">Refresh status</button>
+      <button class="btn-secondary ml-auto" data-action="save-fleet">Save</button>
+    </div>
+
+    <div id="machine-list" class="space-y-3"></div>
+
+    <p class="px-1 text-[12px] leading-relaxed text-ios-gray">
+      Each machine needs ComfyUI running with <span class="font-mono">Listen</span> set to
+      <span class="font-mono">0.0.0.0</span> and its port allowed through the firewall.
+      ComfyUI Desktop uses port 8000, the portable build uses 8188.
+    </p>
+  </section>
+
+  <!-- ============================ 2. WORKFLOW ============================ -->
+  <section data-panel="workflow" class="hidden space-y-4">
+    <div class="grid gap-4 lg:grid-cols-5">
+      <div class="space-y-4 lg:col-span-3">
+
+        <!-- workflow file -->
+        <div class="card">
+          <div class="card-head">
+            <h2 class="card-title">Workflow</h2>
+            <p class="card-sub">Exported from ComfyUI with Workflow → Export (API)</p>
+          </div>
+          <div class="p-4 pt-0">
+            <div id="drop-zone" class="drop-zone">
+              <svg class="size-7 fill-current opacity-40" viewBox="0 0 24 24"><path d="M19 13v5H5v-5H3v7h18v-7h-2ZM12 3 7 8.5h3.5v6h3v-6H17L12 3Z"/></svg>
+              <p class="text-[13px] font-medium">Drop an API workflow here</p>
+              <p class="text-[12px] text-ios-gray">or</p>
+              <button class="btn-secondary" data-action="browse-workflow">Choose file…</button>
+            </div>
+            <div id="workflow-info" class="hidden mt-3"></div>
+          </div>
+        </div>
+
+        <!-- input files -->
+        <div class="card">
+          <div class="card-head">
+            <h2 class="card-title">Input files</h2>
+            <p class="card-sub">Videos, images, audio or masks the workflow loads. Uploaded to
+              every machine before the run. Models do not go here.</p>
+          </div>
+          <div id="asset-list" class="divide-y divide-black/6 dark:divide-white/8"></div>
+          <div class="flex gap-2 p-4 pt-3">
+            <button class="btn-secondary" data-action="add-asset-file">Add files…</button>
+            <button class="btn-secondary" data-action="add-asset-folder">Add folder…</button>
+          </div>
+        </div>
+
+        <!-- distribution -->
+        <div class="card">
+          <div class="card-head"><h2 class="card-title">How to spread the work</h2></div>
+          <div class="space-y-3 p-4 pt-0">
+            <label class="choice">
+              <input type="radio" name="mode" value="shard" checked />
+              <span class="choice-body">
+                <span class="choice-title">Split the batch across machines</span>
+                <span class="choice-sub">Each run gets its own seed. Five machines finish a 100-image batch about five times sooner.</span>
+              </span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="mode" value="mirror" />
+              <span class="choice-body">
+                <span class="choice-title">Mirror on every machine</span>
+                <span class="choice-sub">Every machine runs the same thing with the same seeds — for checking the fleet agrees.</span>
+              </span>
+            </label>
+
+            <div class="row">
+              <span class="row-label" id="count-label">Total generations</span>
+              <div class="stepper">
+                <button data-action="count-down" aria-label="fewer">−</button>
+                <input id="count" type="number" min="1" value="10" />
+                <button data-action="count-up" aria-label="more">+</button>
+              </div>
+            </div>
+
+            <div class="row">
+              <span class="row-label">Seeds</span>
+              <div class="flex items-center gap-2">
+                <div class="segmented segmented-sm" id="seed-mode">
+                  <button class="seg-item" data-seed="random" aria-selected="true">Random</button>
+                  <button class="seg-item" data-seed="fixed" aria-selected="false">Fixed</button>
+                  <button class="seg-item" data-seed="keep" aria-selected="false">Keep</button>
+                  <div class="seg-thumb" aria-hidden="true"></div>
+                </div>
+                <input id="seed-value" type="number" value="0" class="field w-32 hidden" placeholder="start value" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- overrides -->
+        <div class="card">
+          <div class="card-head">
+            <h2 class="card-title">Overrides</h2>
+            <p class="card-sub">Change a prompt or any other setting for this run without editing the JSON.</p>
+          </div>
+          <div id="override-list" class="divide-y divide-black/6 dark:divide-white/8"></div>
+          <div class="p-4 pt-3">
+            <button class="btn-secondary" data-action="add-override">Add override</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- node inspector -->
+      <div class="lg:col-span-2">
+        <div class="card lg:sticky lg:top-[132px]">
+          <div class="card-head">
+            <h2 class="card-title">Nodes in this workflow</h2>
+            <p class="card-sub">Tap any setting to override it for this run.</p>
+          </div>
+          <div id="node-tree" class="max-h-[60vh] overflow-y-auto px-2 pb-3"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================= 3. OUTPUT ============================= -->
+  <section data-panel="output" class="hidden space-y-4">
+    <div class="card">
+      <div class="card-head">
+        <h2 class="card-title">Where the finished files are gathered</h2>
+        <p class="card-sub">A LAN share such as <span class="font-mono">\\FILESERVER\ComfyOutputs</span>,
+          or any folder on this computer. Every image, video and audio file is downloaded here as soon
+          as the machine that made it finishes.</p>
+      </div>
+      <div class="space-y-3 p-4 pt-0">
+        <div class="flex gap-2">
+          <input id="destination" class="field flex-1" placeholder="\\FILESERVER\ComfyOutputs" spellcheck="false" />
+          <button class="btn-secondary" data-action="browse-destination">Browse…</button>
+          <button class="btn-secondary" data-action="open-destination">Open</button>
+        </div>
+
+        <div class="row">
+          <span class="row-label">Sub-folders</span>
+          <select id="layout" class="field w-[22rem] max-w-full">
+            <option value="{run_id}/{machine}/{filename}">Run → machine → file</option>
+            <option value="{run_id}/{filename}">Run → file</option>
+            <option value="{date}/{job}/{machine}/{filename}">Date → job → machine → file</option>
+            <option value="{run_id}/{machine}/{task}_{seed}_{filename}">Run → machine → task + seed in the name</option>
+          </select>
+        </div>
+
+        <div class="rounded-xl bg-black/4 dark:bg-white/6 divide-y divide-black/6 dark:divide-white/8">
+          <label class="switch-row">
+            <span><span class="switch-title">Gather outputs</span>
+              <span class="switch-sub">Turn off to leave files on the machines that made them</span></span>
+            <input type="checkbox" id="collect-enabled" class="ios-switch" checked />
+          </label>
+          <label class="switch-row">
+            <span><span class="switch-title">Overwrite files with the same name</span>
+              <span class="switch-sub">Otherwise a suffix is added</span></span>
+            <input type="checkbox" id="overwrite" class="ios-switch" />
+          </label>
+          <label class="switch-row">
+            <span><span class="switch-title">Check machines before running</span>
+              <span class="switch-sub">Verifies every node, model and input file is present first</span></span>
+            <input type="checkbox" id="preflight" class="ios-switch" checked />
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2 class="card-title">Reuse this setup</h2>
+        <p class="card-sub">Save the workflow, overrides and output settings as a job file so a script
+          or a scheduled task can run it with <span class="font-mono">cf run &lt;file&gt;</span>.</p>
+      </div>
+      <div class="p-4 pt-0"><button class="btn-secondary" data-action="save-job">Save as job file…</button></div>
+    </div>
+
+    <div id="last-run" class="hidden"></div>
+  </section>
+</main>
+
+<!-- ─────────────────────────────── run dock ─────────────────────────────── -->
+<div class="fixed inset-x-0 bottom-0 z-30 border-t border-black/8 dark:border-white/10
+            bg-white/78 dark:bg-[#1c1c1e]/80 backdrop-blur-xl backdrop-saturate-150">
+  <div class="mx-auto max-w-7xl px-5 sm:px-8 py-3">
+    <div class="flex flex-wrap items-center gap-2">
+      <button class="btn-secondary" data-action="check">Check machines</button>
+      <button class="btn-primary" data-action="run">
+        <svg class="size-4 fill-current" viewBox="0 0 24 24"><path d="M8 5v14l11-7L8 5Z"/></svg>
+        Run on fleet
+      </button>
+      <button class="btn-danger hidden" data-action="stop">Stop</button>
+
+      <div class="flex min-w-[200px] flex-1 items-center gap-3">
+        <div class="progress"><div id="progress-bar" class="progress-fill" style="width:0%"></div></div>
+        <span id="progress-text" class="whitespace-nowrap text-[12px] font-medium text-ios-gray">Idle</span>
+      </div>
+
+      <button class="btn-ghost" data-action="toggle-log">
+        <span id="log-toggle-text">Show log</span>
+        <svg id="log-chevron" class="size-4 fill-current transition-transform" viewBox="0 0 24 24"><path d="M12 8l6 6H6l6-6Z"/></svg>
+      </button>
+    </div>
+
+    <div id="machine-chips" class="mt-2 flex flex-wrap gap-1.5"></div>
+
+    <div id="log-wrap" class="hidden mt-3">
+      <div id="log" class="log"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────────────────────── overlays ─────────────────────────────── -->
+<div id="modal-root"></div>
+<div id="toasts" class="pointer-events-none fixed inset-x-0 top-4 z-50 flex flex-col items-center gap-2 px-4"></div>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

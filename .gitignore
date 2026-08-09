@@ -1,9 +1,8 @@
-__pycache__/
-*.pyc
+node_modules/
 
-# per-user GUI state (last workflow, overrides) - not shared
-config/gui_state.json
+# per-user interface state (last workflow, overrides) - not shared
+config/ui-state.json
 
-# local test/output folders
+# local test / run output
 outputs/
 tools/_mock/

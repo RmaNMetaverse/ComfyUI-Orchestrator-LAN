@@ -1,0 +1,19 @@
+{
+  "name": "comfyfleet",
+  "version": "2.0.0",
+  "description": "Run one ComfyUI workflow across every GPU machine on the LAN, from one browser tab.",
+  "type": "module",
+  "bin": {
+    "cf": "./bin/cf.js"
+  },
+  "scripts": {
+    "start": "node bin/cf.js web",
+    "test": "node tests/run-tests.js",
+    "mock": "node tools/mock-comfy.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "private": true
+}
