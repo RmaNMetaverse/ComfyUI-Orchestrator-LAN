@@ -24,14 +24,35 @@ export function enumOptions(spec) {
   return null;
 }
 
+const MODEL_EXTENSIONS = new Set(['.safetensors', '.ckpt', '.pt', '.pth', '.bin', '.gguf', '.onnx', '.sft', '.yaml']);
+const MEDIA_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tif', '.tiff', '.gif',
+  '.mp4', '.mov', '.mkv', '.webm', '.avi', '.wav', '.mp3', '.flac', '.ogg', '.m4a',
+]);
+
+/** 'model' | 'input' | 'setting' - decides both the advice and whether it is worth blocking. */
+export function classifyValue(value) {
+  const ext = path.extname(String(value)).toLowerCase();
+  if (MODEL_EXTENSIONS.has(ext)) return 'model';
+  if (MEDIA_EXTENSIONS.has(ext)) return 'input';
+  return 'setting';
+}
+
 export function describeMissing(missing) {
-  let text = `'${missing.value}' is not on this machine (node ${missing.nodeId} ${missing.classType}.${missing.field})`;
+  const where = `node ${missing.nodeId} ${missing.classType}.${missing.field}`;
+  if (missing.kind === 'setting') {
+    const has = missing.options?.length ? ` It offers: ${missing.options.slice(0, 6).join(', ')}` : '';
+    return `this machine's ComfyUI does not offer '${missing.value}' for ${where}.${has}`;
+  }
+  let text = `'${missing.value}' is not on this machine (${where})`;
   if (missing.options?.length) {
     const sample = missing.options.slice(0, 4).join(', ');
     const extra = missing.options.length > 4 ? `, +${missing.options.length - 4} more` : '';
     text += ` - it has: ${sample}${extra}`;
+  } else if (missing.kind === 'input') {
+    text += ' - its input folder is empty';
   } else {
-    text += ' - it has nothing for that field';
+    text += ' - it has no models of that kind';
   }
   return text;
 }
@@ -79,8 +100,17 @@ export async function checkMachine(client, workflow, pendingAssets = new Set()) 
     const spec = inputs.required?.[field] ?? inputs.optional?.[field];
     const options = enumOptions(spec);
     if (options === null) continue; // free-form widget (text, filename prefix, ...)
+
+    const kind = classifyValue(value);
+    if (!options.length && kind === 'setting') {
+      // The machine reported no choices at all for this widget. That means it could not
+      // enumerate them, not that the value is wrong - blocking here would refuse a machine
+      // over something like SaveVideo.codec = "auto". Files are different: an empty list
+      // really does mean the folder holds nothing.
+      continue;
+    }
     if (!options.includes(value) && !pendingAssets.has(path.basename(value))) {
-      report.missingValues.push({ nodeId, classType, field, value, options });
+      report.missingValues.push({ nodeId, classType, field, value, options, kind });
     }
   }
 

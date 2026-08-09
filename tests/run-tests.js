@@ -224,6 +224,32 @@ async function engineTests() {
   check('the run works once the input file is uploaded', fixedManifest.tasksSucceeded === 2,
     JSON.stringify(fixedManifest.failures));
 
+  // ---- a combo the machine cannot enumerate must not block the run
+  const videoPath = path.join(TMP, 'savevideo_api.json');
+  fs.writeFileSync(videoPath, JSON.stringify({
+    92: {
+      class_type: 'SaveVideo',
+      inputs: { video: ['1', 0], filename_prefix: 'out', format: 'auto', codec: 'auto' },
+      _meta: { title: 'Save Video' },
+    },
+  }));
+  const videoWf = Workflow.load(videoPath);
+  const videoReport = await checkMachine(new ComfyClient({ ...machines[0], timeout: 10000 }), videoWf, new Set());
+  check('an empty combo is not treated as a missing value', videoReport.missingValues.length === 0,
+    JSON.stringify(videoReport.missingValues));
+  check('the machine stays usable', videoReport.ok === true, JSON.stringify(videoReport));
+
+  // ---- but an empty *file* list still counts as missing
+  const emptyInputWf = Workflow.parse({
+    1: { class_type: 'LoadVideo', inputs: { file: 'nowhere.mp4' }, _meta: { title: 'Load Video' } },
+  });
+  const emptyInputReport = await checkMachine(
+    new ComfyClient({ ...machines[1], timeout: 10000 }), emptyInputWf, new Set());
+  check('a missing input file is still caught', emptyInputReport.missingValues.length === 1,
+    JSON.stringify(emptyInputReport.missingValues));
+  check('it is labelled as an input file', emptyInputReport.missingValues[0]?.kind === 'input',
+    emptyInputReport.missingValues[0]?.kind);
+
   // ---- a machine that dies mid-run
   const rootC = path.join(TMP, 'mockC');
   const dying = startMock({ port: 8843, name: 'MOCK-C', delay: 0.5, root: rootC });
@@ -311,8 +337,12 @@ async function runWebChecks() {
   check('a UI workflow is refused with advice', badWorkflow.status === 400 && badWorkflow.data.error.includes('Export (API)'),
     JSON.stringify(badWorkflow.data));
 
-  const browsed = await call(`/api/browse?path=${encodeURIComponent(ROOT)}&only=dirs`);
-  check('/api/browse lists folders', browsed.data.entries.some((e) => e.name === 'src' && e.dir));
+  // The picker opens a real Explorer dialog, so it is not driven from here - but the old
+  // in-page browser must be gone, and the route has to exist.
+  const gone = await call(`/api/browse?path=${encodeURIComponent(ROOT)}&only=dirs`);
+  check('the in-page file browser is gone', gone.status === 404, JSON.stringify(gone.data));
+  const badPick = await call('/api/pick', { method: 'GET' });
+  check('/api/pick is registered', badPick.status === 404 ? false : true, JSON.stringify(badPick.data));
 
   // a full run driven exactly like the browser drives it
   const events = [];

@@ -276,6 +276,7 @@ function renderWorkflow() {
         <p class="truncate font-mono text-[11px] text-ios-gray">${esc(wf.path)}</p>
       </div>
       <button class="btn-tiny" data-action="browse-workflow">Change</button>
+      <button class="btn-tiny danger" data-action="clear-workflow">Remove</button>
     </div>
     <div class="mt-2 flex flex-wrap gap-1.5">
       ${chip(`${wf.nodeCount} nodes`)}${chip(`${wf.classCount} node types`)}
@@ -366,6 +367,7 @@ zone.addEventListener('drop', async (event) => {
 
 function renderAssets() {
   const list = $('#asset-list');
+  $('#clear-assets')?.classList.toggle('hidden', !state.assets.length);
   if (!state.assets.length) {
     list.innerHTML = '<p class="px-4 pb-1 pt-0 text-[12px] text-ios-gray">Nothing added. Only needed if the workflow loads a video, image or audio file.</p>';
   } else {
@@ -596,98 +598,54 @@ function coerce(raw) {
   return raw;
 }
 
-/* ───────────────────────────── file browser ─────────────────────────────── */
+/* ────────────────────────── native file dialogs ─────────────────────────── */
 
-function browseDialog({ title, only = 'all', extensions = null, multiple = false, start = null, onPick }) {
-  let cwd = start;
-  const picked = new Set();
-
-  const close = openSheet({
-    title,
-    subtitle: 'These are the folders on the machine running ComfyFleet.',
-    width: '38rem',
-    body: `
-      <div class="pb-2">
-        <div class="mb-2 flex items-center gap-2">
-          <button class="btn-tiny" data-up>↑ Up</button>
-          <input class="field flex-1 font-mono text-[11px]" data-path spellcheck="false" />
-          <button class="btn-tiny" data-go>Go</button>
-        </div>
-        <div data-drives class="mb-2 flex flex-wrap gap-1.5"></div>
-        <div data-entries class="max-h-[46vh] min-h-[12rem] overflow-y-auto rounded-xl bg-black/3 dark:bg-white/5 p-1"></div>
-      </div>`,
-    footer: `<button class="btn-secondary" data-close>Cancel</button>
-             <button class="btn-primary" data-ok>${only === 'dirs' ? 'Use this folder' : 'Choose'}</button>`,
-    onMount: (root, closeSheet) => {
-      const entriesEl = $('[data-entries]', root);
-      const pathEl = $('[data-path]', root);
-
-      async function load(target) {
-        const params = new URLSearchParams({ only });
-        if (target) params.set('path', target);
-        if (extensions) params.set('ext', extensions.join(','));
-        let data;
-        try {
-          data = await api(`/api/browse?${params}`);
-        } catch (err) {
-          return toast(err.message, 'error');
-        }
-        cwd = data.cwd;
-        pathEl.value = data.cwd;
-        picked.clear();
-        $('[data-drives]', root).innerHTML = data.drives
-          .map((d) => `<button class="btn-tiny" data-drive="${esc(d)}">${esc(d)}</button>`).join('');
-        entriesEl.innerHTML = data.error
-          ? `<p class="p-4 text-center text-[12px] text-ios-red">${esc(data.error)}</p>`
-          : data.entries.length
-            ? data.entries.map((entry, i) => `
-                <button class="browse-item" data-i="${i}" data-dir="${entry.dir}" data-p="${esc(entry.path)}">
-                  <svg class="size-4 flex-none fill-current ${entry.dir ? 'opacity-70' : 'opacity-35'}" viewBox="0 0 24 24">
-                    ${entry.dir
-                      ? '<path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2Z"/>'
-                      : '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Z"/>'}
-                  </svg>
-                  <span class="min-w-0 flex-1 truncate">${esc(entry.name)}</span>
-                  ${entry.dir ? '<span class="text-ios-gray">›</span>' : `<span class="text-[11px] text-ios-gray">${formatBytes(entry.size)}</span>`}
-                </button>`).join('')
-            : '<p class="p-4 text-center text-[12px] text-ios-gray">Nothing here</p>';
-      }
-
-      entriesEl.addEventListener('click', (event) => {
-        const item = event.target.closest('.browse-item');
-        if (!item) return;
-        if (item.dataset.dir === 'true') return load(item.dataset.p);
-        if (multiple) {
-          item.classList.toggle('picked');
-          if (picked.has(item.dataset.p)) picked.delete(item.dataset.p);
-          else picked.add(item.dataset.p);
-        } else {
-          closeSheet();
-          onPick([item.dataset.p]);
-        }
-      });
-
-      $('[data-up]', root).onclick = async () => {
-        const data = await api(`/api/browse?path=${encodeURIComponent(cwd)}`);
-        if (data.parent) load(data.parent);
-      };
-      $('[data-go]', root).onclick = () => load(pathEl.value.trim());
-      pathEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') load(pathEl.value.trim()); });
-      $('[data-drives]', root).addEventListener('click', (event) => {
-        const drive = event.target.closest('[data-drive]');
-        if (drive) load(drive.dataset.drive);
-      });
-      $('[data-close]', root).onclick = closeSheet;
-      $('[data-ok]', root).onclick = () => {
-        closeSheet();
-        onPick(only === 'dirs' ? [cwd] : [...picked]);
-      };
-
-      load(start);
-    },
-  });
-  return close;
+/**
+ * Opens the real Explorer dialog on the machine running ComfyFleet.
+ * If that is not possible (headless box, or the UI opened from another computer)
+ * it falls back to typing a path.
+ */
+async function choosePaths({ kind = 'file', filter = 'any', initial = '', title = 'Select' }) {
+  let result;
+  const button = document.activeElement;
+  if (button?.tagName === 'BUTTON') button.disabled = true;
+  try {
+    result = await api('/api/pick', { method: 'POST', body: { kind, filter, initial, title } });
+  } catch (err) {
+    toast(err.message, 'error');
+    return [];
+  } finally {
+    if (button?.tagName === 'BUTTON') button.disabled = false;
+  }
+  if (result.unavailable) return typePathDialog({ kind, title, initial, reason: result.error });
+  return result.paths || [];
 }
+
+function typePathDialog({ kind, title, initial, reason }) {
+  return new Promise((resolve) => {
+    let settled = false;
+    openSheet({
+      title,
+      subtitle: `The file dialog could not be opened${reason ? ` (${reason})` : ''}. Type the full path instead — it must be a path the machine running ComfyFleet can reach.`,
+      width: '34rem',
+      body: `<div class="pb-2"><input class="field w-full font-mono text-[12px]" data-path
+                value="${esc(initial || '')}" spellcheck="false"
+                placeholder="${kind === 'folder' ? '\\\\SERVER\\share\\folder' : 'D:\\\\path\\\\to\\\\file'}" /></div>`,
+      footer: '<button class="btn-secondary" data-close>Cancel</button><button class="btn-primary" data-ok>Use this</button>',
+      onMount: (root, close) => {
+        const input = $('[data-path]', root);
+        const done = (value) => { settled = true; close(); resolve(value ? [value] : []); };
+        $('[data-close]', root).onclick = () => done(null);
+        $('[data-ok]', root).onclick = () => done(input.value.trim());
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') done(input.value.trim()); });
+        root.addEventListener('remove', () => { if (!settled) resolve([]); });
+        input.focus();
+      },
+    });
+  });
+}
+
+/* ───────────────────────────── discover dialog ──────────────────────────── */
 
 function discoverDialog() {
   openSheet({
@@ -944,27 +902,51 @@ document.addEventListener('click', (event) => {
     discover: discoverDialog,
     'refresh-status': refreshStatus,
     'save-fleet': () => saveFleet(),
-    'browse-workflow': () =>
-      browseDialog({
-        title: 'Choose a workflow', extensions: ['.json'], start: state.workflow?.path,
-        onPick: ([path]) => path && loadWorkflow({ path }),
-      }),
-    'add-asset-file': () =>
-      browseDialog({
-        title: 'Add input files', multiple: true,
-        onPick: (paths) => { state.assets.push(...paths.filter((p) => !state.assets.includes(p))); renderAssets(); saveUi(); },
-      }),
-    'add-asset-folder': () =>
-      browseDialog({
-        title: 'Add a folder of input files', only: 'dirs',
-        onPick: ([path]) => { if (path && !state.assets.includes(path)) state.assets.push(path); renderAssets(); saveUi(); },
-      }),
+    'browse-workflow': async () => {
+      const [chosen] = await choosePaths({
+        kind: 'file', filter: 'workflow', title: 'Choose an API workflow',
+        initial: state.workflow?.path || '',
+      });
+      if (chosen) loadWorkflow({ path: chosen });
+    },
+    'clear-workflow': () => {
+      state.workflow = null;
+      state.expandedNodes = new Set();
+      renderWorkflow();
+      saveUi();
+      toast('Workflow removed');
+    },
+    'add-asset-file': async () => {
+      const paths = await choosePaths({ kind: 'files', filter: 'media', title: 'Add input files' });
+      const added = paths.filter((p) => !state.assets.includes(p));
+      state.assets.push(...added);
+      renderAssets();
+      saveUi();
+      if (added.length) toast(`Added ${added.length} file${added.length === 1 ? '' : 's'}`, 'good');
+    },
+    'add-asset-folder': async () => {
+      const [chosen] = await choosePaths({ kind: 'folder', title: 'Add a folder of input files' });
+      if (chosen && !state.assets.includes(chosen)) {
+        state.assets.push(chosen);
+        renderAssets();
+        saveUi();
+      }
+    },
+    'clear-assets': () => {
+      state.assets = [];
+      renderAssets();
+      saveUi();
+    },
     'add-override': () => overrideDialog(null),
-    'browse-destination': () =>
-      browseDialog({
-        title: 'Where should the outputs go?', only: 'dirs', start: $('#destination').value.trim(),
-        onPick: ([path]) => { if (path) { $('#destination').value = path; saveFleet(true); } },
-      }),
+    'browse-destination': async () => {
+      const [chosen] = await choosePaths({
+        kind: 'folder', title: 'Where should the outputs go?', initial: $('#destination').value.trim(),
+      });
+      if (chosen) {
+        $('#destination').value = chosen;
+        saveFleet(true);
+      }
+    },
     'open-destination': async () => {
       try {
         await api('/api/open', { method: 'POST', body: { path: $('#destination').value.trim() } });

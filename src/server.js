@@ -15,7 +15,8 @@ import {
 } from './config.js';
 import { DEFAULT_PORTS, scan } from './discover.js';
 import { FLEET_PATH, JOBS_DIR, PUBLIC_DIR, UI_STATE_PATH, WORKFLOW_DIR } from './paths.js';
-import { checkMachine, summarize } from './preflight.js';
+import { pick } from './picker.js';
+import { checkMachine, describeMissing, summarize } from './preflight.js';
 import { assetNames, Runner, safeName, writeManifest } from './runner.js';
 import { Workflow, WorkflowError } from './workflow.js';
 
@@ -179,12 +180,27 @@ async function startCheck(payload) {
   }
 }
 
-function describeMissingLine(missing) {
-  const sample = missing.options?.length
-    ? ` - it has: ${missing.options.slice(0, 4).join(', ')}${missing.options.length > 4 ? `, +${missing.options.length - 4} more` : ''}`
-    : ' - it has nothing for that field';
-  return `'${missing.value}' is not on this machine (node ${missing.nodeId} ${missing.classType}.${missing.field})${sample}`;
+/** Advice that matches what actually went wrong, rather than one catch-all sentence. */
+function hintsFor(reports) {
+  const missing = reports.flatMap((r) => r.missingValues);
+  const hints = [];
+  if (missing.some((m) => m.kind === 'input')) {
+    hints.push("add the input files listed above under Input files, or put them in that machine's ComfyUI\\input folder");
+  }
+  if (missing.some((m) => m.kind === 'model')) {
+    hints.push('copy the missing models to the same relative path under ComfyUI\\models on that machine');
+  }
+  if (missing.some((m) => m.kind === 'setting')) {
+    hints.push('that machine\'s ComfyUI is missing an option this workflow uses - it is usually an older or newer build, or a custom node version difference');
+  }
+  if (reports.some((r) => r.missingClasses.length)) {
+    hints.push('install the missing custom nodes with ComfyUI Manager and restart ComfyUI on that machine');
+  }
+  hints.push('to run anyway, switch off "Check machines before running" on the Output tab');
+  return hints;
 }
+
+const describeMissingLine = describeMissing;
 
 async function startRun(payload) {
   const { config, job, workflow, clients, applied } = prepare(payload);
@@ -232,12 +248,7 @@ async function startRun(payload) {
         usable = clients.filter((c) => ready.includes(c.name));
         if (!usable.length) {
           pushLog('no usable machines - nothing to run');
-          if (reports.some((r) => r.missingValues.length)) {
-            pushLog(
-              'hint: the input files listed above must either be added to this job on the ' +
-                "Workflow tab, or already sit in that machine's ComfyUI\\input folder",
-            );
-          }
+          for (const hint of hintsFor(reports)) pushLog(`hint: ${hint}`);
           return;
         }
       }
@@ -310,61 +321,6 @@ function timestamp() {
   const d = new Date();
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
-}
-
-/* -------------------------------------------------------- file browsing */
-
-function listDrives() {
-  if (process.platform !== 'win32') return ['/'];
-  const drives = [];
-  for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') {
-    const root = `${letter}:\\`;
-    try {
-      fs.accessSync(root);
-      drives.push(root);
-    } catch {
-      /* drive letter not mounted */
-    }
-  }
-  return drives;
-}
-
-function browse(target, { only = 'all', extensions = null } = {}) {
-  const current = target && target.trim() ? path.resolve(target) : os.homedir();
-  const entries = [];
-  let error = null;
-  try {
-    for (const item of fs.readdirSync(current, { withFileTypes: true })) {
-      const isDir = item.isDirectory();
-      if (!isDir && only === 'dirs') continue;
-      if (!isDir && extensions?.length) {
-        const ext = path.extname(item.name).toLowerCase();
-        if (!extensions.includes(ext)) continue;
-      }
-      if (item.name.startsWith('.') || item.name.startsWith('$')) continue;
-      let size = 0;
-      if (!isDir) {
-        try {
-          size = fs.statSync(path.join(current, item.name)).size;
-        } catch {
-          size = 0;
-        }
-      }
-      entries.push({ name: item.name, dir: isDir, size, path: path.join(current, item.name) });
-    }
-  } catch (err) {
-    error = err.message;
-  }
-  entries.sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name, undefined, { numeric: true }) : a.dir ? -1 : 1));
-  const parent = path.dirname(current);
-  return {
-    cwd: current,
-    parent: parent === current ? null : parent,
-    entries,
-    drives: listDrives(),
-    home: os.homedir(),
-    error,
-  };
 }
 
 /* ---------------------------------------------------------------- routes */
@@ -493,12 +449,21 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { ok: true });
   }
 
-  if (route === '/api/browse' && req.method === 'GET') {
-    const extensions = url.searchParams.get('ext')?.split(',').filter(Boolean) || null;
-    return sendJson(res, 200, browse(url.searchParams.get('path'), {
-      only: url.searchParams.get('only') || 'all',
-      extensions,
-    }));
+  if (route === '/api/pick' && req.method === 'POST') {
+    const body = await readBody(req);
+    try {
+      const paths = await pick({
+        kind: body.kind || 'file',
+        filter: body.filter || 'any',
+        initial: body.initial || '',
+        title: body.title || 'Select',
+      });
+      return sendJson(res, 200, { paths, cancelled: paths.length === 0 });
+    } catch (err) {
+      // No dialog available (headless server, or the UI opened from another machine):
+      // the browser falls back to letting the person type a path.
+      return sendJson(res, 200, { paths: [], unavailable: true, error: err.message });
+    }
   }
 
   if (route === '/api/open' && req.method === 'POST') {

@@ -7,13 +7,19 @@
   },
   "collect": {
     "enabled": true,
-    "destination": "\\\\FILESERVER\\ComfyOutputs",
+    "destination": "\\\\192.168.90.7\\department\\RmaN",
     "layout": "{run_id}/{machine}/{filename}",
     "overwrite": false
   },
   "machines": [
-    { "name": "GPU-01", "host": "192.168.1.51", "port": 8000, "slots": 2, "enabled": true, "note": "RTX 4090" },
-    { "name": "GPU-02", "host": "192.168.1.52", "port": 8000, "slots": 2, "enabled": true, "note": "RTX 4090" },
-    { "name": "GPU-03", "host": "192.168.1.53", "port": 8188, "slots": 2, "enabled": true, "note": "RTX 4090, portable build" }
+    {
+      "name": "Sadri PC",
+      "host": "192.168.90.163",
+      "port": 5555,
+      "scheme": "http",
+      "enabled": true,
+      "slots": 2,
+      "note": ""
+    }
   ]
 }

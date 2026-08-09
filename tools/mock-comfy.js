@@ -110,6 +110,18 @@ function objectInfo() {
     VAEDecode: { input: { required: { samples: ['LATENT'], vae: ['VAE'] } } },
     SaveImage: { input: { required: { images: ['IMAGE'], filename_prefix: ['STRING'] } } },
     LoadImage: { input: { required: { image: [inputFiles(['.png', '.jpg', '.jpeg', '.webp'])] } } },
+    // Some builds report a combo with no options at all - ComfyFleet must not read that
+    // as "the value is missing" (this is what SaveVideo.codec does on 0.3.6x).
+    SaveVideo: {
+      input: {
+        required: {
+          video: ['VIDEO'],
+          filename_prefix: ['STRING'],
+          format: ['COMBO', { options: [] }],
+          codec: ['COMBO', { options: [] }],
+        },
+      },
+    },
     // Newer ComfyUI declares upload combos this way - the options live in the settings
     // dict, not in the first element.
     LoadVideo: {
