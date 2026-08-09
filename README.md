@@ -24,11 +24,11 @@ scan the subnet and pick from whatever answers. The switch on each row decides w
 *Refresh status* shows each machine's GPU, free VRAM, queue depth and ComfyUI version. During a
 run the same rows show live state: running, idle, dropped or refused.
 
-**2. Workflow** — drop the exported `.json` onto the page or browse for it. The panel on the
-right lists every node with its settings, and **clicking any setting creates an override** for
-this run — prompt text, steps, cfg, resolution — without editing the file. Below that: split
-the batch across machines or mirror the same run everywhere, how many generations, and how
-seeds are handled.
+**2. Workflow** — drop the exported `.json` onto the page, or press *Choose file* to open the
+normal Windows file dialog. *Remove* unloads it again. The panel on the right lists every node
+with its settings, and **clicking any setting creates an override** for this run — prompt text,
+steps, cfg, resolution — without editing the file. Below that: input files (each with its own
+*Remove*, plus *Remove all*), split vs. mirror, how many generations, and how seeds are handled.
 
 **3. Output** — where finished files are gathered: a LAN share such as
 `\\FILESERVER\ComfyOutputs`, or any folder on this computer. *Save as job file* writes the whole
@@ -111,6 +111,13 @@ node bin/cf.js web --host 0.0.0.0 --port 8787
 ```
 
 Then use *Find on network* on the Machines tab, or add machines by hand.
+
+**File dialogs.** *Choose file*, *Add files* and *Browse* open the real Windows file dialog on
+the machine running ComfyFleet — that is deliberate, since the paths have to make sense to the
+server, not to your browser. If you drive the interface from a different computer, the dialog
+would appear on the server's screen where nobody can see it, so start the server with
+`COMFYFLEET_PICKER=off` and the interface will ask you to type paths instead. It falls back to
+that automatically on a machine with no desktop.
 
 ---
 
@@ -222,6 +229,8 @@ npm test
 | `'foo.safetensors' is not on this machine` | Copy the model to the same relative path under `models/` |
 | `'clip.mp4' is not on this machine` | An input file, not a model: add it under Input files, or drop it in that machine's `ComfyUI\input` |
 | `rejected the workflow: node 1 (LoadVideo): file - Invalid video file: clip.mp4` | ComfyUI says that name does not resolve in its `input` folder — same fix as above. The machine is fine, so the run stops instead of blaming it |
+| `this machine's ComfyUI does not offer 'x' for node N …` | That build genuinely lacks the option — usually an older/newer ComfyUI or a different custom node version. To run regardless, switch off *Check machines before running* on the Output tab |
+| The file dialog does not appear | It opens on the machine running ComfyFleet. Driving the interface from another computer? Start the server with `COMFYFLEET_PICKER=off` and type paths instead |
 | Outputs are not appearing | The machine running ComfyFleet needs write access to the destination; check `collectErrors` in `run.json` |
 | One machine is much slower | Normal with mixed GPUs — split mode already compensates. Raise its `slots` if it sits idle |
 

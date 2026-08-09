@@ -394,7 +394,10 @@ async function handleApi(req, res, url) {
       // dropped into the browser: keep a copy so runs and job files can refer to it
       workflow = Workflow.parse(body.data);
       fs.mkdirSync(WORKFLOW_DIR, { recursive: true });
-      file = path.join(WORKFLOW_DIR, safeName(body.name || 'dropped', 'workflow').replace(/_json$/, '') + '.json');
+      // Drop the extension the browser gave us before adding our own, or a dropped
+      // "trimmer.json" is saved as "trimmer.json.json".
+      const base = safeName(String(body.name || 'dropped').replace(/\.json$/i, ''), 'workflow');
+      file = path.join(WORKFLOW_DIR, `${base}.json`);
       fs.writeFileSync(file, `${JSON.stringify(body.data, null, 2)}\n`, 'utf8');
       workflow.source = file;
     } else {

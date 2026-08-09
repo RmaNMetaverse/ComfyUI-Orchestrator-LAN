@@ -34,6 +34,11 @@ export class PickerUnavailable extends Error {}
  * @returns string[] - empty when the dialog was cancelled
  */
 export async function pick({ kind = 'file', filter = 'any', initial = '', title = 'Select' } = {}) {
+  if (process.env.COMFYFLEET_PICKER === 'off') {
+    // For a headless server, or when the interface is used from another computer and a
+    // dialog on the server's desktop would help nobody.
+    throw new PickerUnavailable('native file dialogs are switched off (COMFYFLEET_PICKER=off)');
+  }
   const spec = FILTERS[filter] || FILTERS.any;
   if (process.platform === 'win32') return pickWindows({ kind, spec, initial, title });
   if (process.platform === 'darwin') return pickMac({ kind, spec, initial, title });
@@ -62,7 +67,8 @@ async function pickWindows({ kind, spec, initial, title }) {
     const { stdout } = await run('powershell.exe', args, { windowsHide: false, maxBuffer: 1 << 20 });
     return splitLines(stdout);
   } catch (err) {
-    throw new PickerUnavailable(`the Windows file dialog could not be opened: ${err.message}`);
+    const detail = String(err.stderr || '').trim().split('\n')[0] || err.message;
+    throw new PickerUnavailable(`the Windows file dialog could not be opened: ${detail}`);
   }
 }
 

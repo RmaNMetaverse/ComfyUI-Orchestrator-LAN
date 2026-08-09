@@ -1,0 +1,42 @@
+{
+  "1": {
+    "inputs": {
+      "file": "AI-Godal-Normal.mp4",
+      "video-preview": ""
+    },
+    "class_type": "LoadVideo",
+    "_meta": {
+      "title": "Load Video"
+    }
+  },
+  "2": {
+    "inputs": {
+      "start_time": 0,
+      "duration": 3,
+      "strict_duration": false,
+      "video": [
+        "1",
+        0
+      ]
+    },
+    "class_type": "Video Slice",
+    "_meta": {
+      "title": "Trim Video"
+    }
+  },
+  "3": {
+    "inputs": {
+      "filename_prefix": "video/ComfyUI",
+      "format": "auto",
+      "codec": "auto",
+      "video": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "SaveVideo",
+    "_meta": {
+      "title": "Save Video"
+    }
+  }
+}

@@ -280,7 +280,10 @@ async function webTests() {
   const backup = fs.existsSync(fleetPath) ? fs.readFileSync(fleetPath) : null;
   const uiBackup = fs.existsSync(uiPath) ? fs.readFileSync(uiPath) : null;
 
-  const server = spawn(process.execPath, [path.join(ROOT, 'bin', 'cf.js'), 'web', '--port', '8788'], { stdio: 'ignore' });
+  const server = spawn(process.execPath, [path.join(ROOT, 'bin', 'cf.js'), 'web', '--port', '8788'], {
+    stdio: 'ignore',
+    env: { ...process.env, COMFYFLEET_PICKER: 'off' }, // never pop a dialog during tests
+  });
   mocks.push(server);
   const restore = () => {
     // the web tests write to the real config files - always put them back
@@ -333,16 +336,32 @@ async function runWebChecks() {
   check('the outline hides wired inputs',
     inspected.data.outline.find((n) => n.id === '3').widgets.every((w) => w.field !== 'model'));
 
+  // A workflow dropped onto the page keeps a sane filename. The name is namespaced so this
+  // can never land on top of a real workflow in the user's folder.
+  const droppedName = '__comfyfleet_selftest drop.json';
+  const dropped = await call('/api/workflow', {
+    method: 'POST',
+    body: {
+      name: droppedName,
+      data: { 1: { class_type: 'SaveImage', inputs: { filename_prefix: 'x' }, _meta: { title: 'Save' } } },
+    },
+  });
+  check('a dropped workflow is not saved as .json.json',
+    dropped.data.name === 'comfyfleet_selftest_drop.json', dropped.data.name);
+  fs.rmSync(path.join(ROOT, 'workflows', 'comfyfleet_selftest_drop.json'), { force: true });
+
   const badWorkflow = await call('/api/workflow', { method: 'POST', body: { data: { nodes: [], links: [] } } });
   check('a UI workflow is refused with advice', badWorkflow.status === 400 && badWorkflow.data.error.includes('Export (API)'),
     JSON.stringify(badWorkflow.data));
 
-  // The picker opens a real Explorer dialog, so it is not driven from here - but the old
-  // in-page browser must be gone, and the route has to exist.
+  // The picker opens a real Explorer dialog, so it is not driven from here. The test server
+  // runs with COMFYFLEET_PICKER=off, which exercises the route and the typed-path fallback.
   const gone = await call(`/api/browse?path=${encodeURIComponent(ROOT)}&only=dirs`);
   check('the in-page file browser is gone', gone.status === 404, JSON.stringify(gone.data));
-  const badPick = await call('/api/pick', { method: 'GET' });
-  check('/api/pick is registered', badPick.status === 404 ? false : true, JSON.stringify(badPick.data));
+  const picked = await call('/api/pick', { method: 'POST', body: { kind: 'folder' } });
+  check('/api/pick answers with the fallback when no dialog is available',
+    picked.status === 200 && picked.data.unavailable === true && Array.isArray(picked.data.paths),
+    JSON.stringify(picked.data));
 
   // a full run driven exactly like the browser drives it
   const events = [];
