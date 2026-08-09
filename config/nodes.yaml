@@ -1,0 +1,40 @@
+# ComfyFleet - the machines this console drives.
+# Run `cf discover 192.168.1.0/24` to generate the machines list automatically.
+
+fleet:
+  name: studio
+  request_timeout: 20      # seconds for normal API calls
+  poll_interval: 2         # how often to poll for finished jobs
+  stall_timeout: 1800      # give up on a task after this many seconds
+
+defaults:
+  port: 8000               # ComfyUI Desktop default. Portable / manual installs use 8188.
+  scheme: http
+  enabled: true
+  slots: 2                 # prompts kept queued per machine (2 hides network latency)
+
+collect:
+  enabled: true
+  # UNC path to the LAN share, or a local folder. Must be writable by this console.
+  destination: '\\FILESERVER\ComfyOutputs'
+  # Tokens: run_id machine filename stem ext task seed node kind job date subfolder
+  layout: '{run_id}/{machine}/{filename}'
+  overwrite: false
+
+machines:
+  - name: GPU-01
+    host: 192.168.1.51
+    note: "RTX 4090"
+
+  - name: GPU-02
+    host: 192.168.1.52
+    note: "RTX 4090"
+
+  - name: GPU-03
+    host: 192.168.1.53
+    port: 8188             # this one runs the portable build
+    note: "RTX 4090"
+
+  # - name: GPU-04
+  #   host: 192.168.1.54
+  #   enabled: false       # temporarily take a machine out of the fleet

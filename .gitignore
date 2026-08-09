@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+
+# per-user GUI state (last workflow, overrides) - not shared
+config/gui_state.json
+
+# local test/output folders
+outputs/
+tools/_mock/

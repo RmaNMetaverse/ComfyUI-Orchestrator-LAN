@@ -1,0 +1,42 @@
+# A job = one workflow + how many times to run it + what to change on each run.
+# Run it with:  cf run jobs/example.yaml
+
+name: example
+
+# Exported from ComfyUI with  Workflow -> Export (API).  A normal saved workflow
+# will not work: it has no 'class_type' fields.
+workflow: ../workflows/example_api.json
+
+# Files (or folders of files) uploaded to every machine's ComfyUI/input folder
+# before the run, so LoadImage / LoadVideo nodes resolve everywhere.
+# Models are NOT sent this way - see the README.
+assets:
+  - ../assets
+
+# shard  = split `count` generations across the fleet, every run gets its own seed.
+#          40 images on 5 machines = 8 each, done ~5x faster.
+# mirror = every machine runs the whole thing `count` times with the same seeds,
+#          producing identical output everywhere (use for validating a fleet).
+mode: shard
+count: 40
+
+# int  -> seeds are base, base+1, base+2 ... (reproducible)
+# random -> a fresh random seed per task
+# keep -> do not touch the seeds baked into the workflow
+seed: random
+
+# Change any literal widget without editing the JSON.
+# Select a node by id, by its title in the graph, or by class.
+overrides:
+  - title: "Positive Prompt"
+    field: text
+    value: "a cinematic portrait of a lighthouse keeper, volumetric fog, 85mm"
+  - class: "EmptyLatentImage"
+    field: batch_size
+    value: 1
+  # - node: "3"
+  #   field: steps
+  #   value: 30
+
+# Optional per-job override of the fleet's collect destination:
+# collect_destination: '\\FILESERVER\ComfyOutputs\campaign-A'
