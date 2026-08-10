@@ -1,0 +1,301 @@
+{
+  "92": {
+    "inputs": {
+      "filename_prefix": "video/MiniMax_H3",
+      "format": "auto",
+      "codec": "auto",
+      "video": [
+        "130",
+        0
+      ]
+    },
+    "class_type": "SaveVideo",
+    "_meta": {
+      "title": "Save Video"
+    }
+  },
+  "115": {
+    "inputs": {
+      "aspect_ratio": "16:9 (Widescreen)",
+      "megapixels": 1.5,
+      "multiple": 32
+    },
+    "class_type": "ResolutionSelector",
+    "_meta": {
+      "title": "Resolution Selector (Size)"
+    }
+  },
+  "119": {
+    "inputs": {
+      "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "120": {
+    "inputs": {
+      "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "121": {
+    "inputs": {
+      "samples": [
+        "125",
+        0
+      ],
+      "vae": [
+        "120",
+        0
+      ]
+    },
+    "class_type": "VAEDecodeAudio",
+    "_meta": {
+      "title": "VAE Decode Audio"
+    }
+  },
+  "122": {
+    "inputs": {
+      "samples": [
+        "125",
+        0
+      ],
+      "vae": [
+        "119",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "123": {
+    "inputs": {
+      "sampler_name": "res_multistep"
+    },
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "KSamplerSelect"
+    }
+  },
+  "124": {
+    "inputs": {
+      "scheduler": "simple",
+      "steps": 20,
+      "denoise": 1,
+      "model": [
+        "127",
+        0
+      ]
+    },
+    "class_type": "BasicScheduler",
+    "_meta": {
+      "title": "BasicScheduler"
+    }
+  },
+  "125": {
+    "inputs": {
+      "noise": [
+        "129",
+        0
+      ],
+      "guider": [
+        "126",
+        0
+      ],
+      "sampler": [
+        "123",
+        0
+      ],
+      "sigmas": [
+        "124",
+        0
+      ],
+      "latent_image": [
+        "136",
+        1
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "SamplerCustomAdvanced"
+    }
+  },
+  "126": {
+    "inputs": {
+      "model": [
+        "127",
+        0
+      ],
+      "conditioning": [
+        "136",
+        0
+      ]
+    },
+    "class_type": "BasicGuider",
+    "_meta": {
+      "title": "Basic Guider"
+    }
+  },
+  "127": {
+    "inputs": {
+      "unet_name": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Diffusion Model"
+    }
+  },
+  "128": {
+    "inputs": {
+      "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "type": "minimax",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load CLIP"
+    }
+  },
+  "129": {
+    "inputs": {
+      "noise_seed": 157368968253448
+    },
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "RandomNoise"
+    }
+  },
+  "130": {
+    "inputs": {
+      "fps": 24,
+      "bit_depth": 8,
+      "images": [
+        "122",
+        0
+      ],
+      "audio": [
+        "121",
+        0
+      ]
+    },
+    "class_type": "CreateVideo",
+    "_meta": {
+      "title": "Create Video"
+    }
+  },
+  "131": {
+    "inputs": {
+      "expression": "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17",
+      "values.a": [
+        "132",
+        0
+      ]
+    },
+    "class_type": "ComfyMathExpression",
+    "_meta": {
+      "title": "Math Expression"
+    }
+  },
+  "132": {
+    "inputs": {
+      "value": 15
+    },
+    "class_type": "PrimitiveFloat",
+    "_meta": {
+      "title": "Float (Duration)"
+    }
+  },
+  "136": {
+    "inputs": {
+      "prompt": [
+        "138",
+        0
+      ],
+      "width": [
+        "115",
+        0
+      ],
+      "height": [
+        "115",
+        1
+      ],
+      "length": [
+        "131",
+        1
+      ],
+      "ref_image_size": "match",
+      "clip": [
+        "128",
+        0
+      ],
+      "vae": [
+        "119",
+        0
+      ],
+      "audio_vae": [
+        "120",
+        0
+      ],
+      "ref_images.ref_image_0": [
+        "141",
+        0
+      ],
+      "ref_images.ref_image_1": [
+        "142",
+        0
+      ],
+      "ref_images.ref_image_2": [
+        "143",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3ReferenceToVideo",
+    "_meta": {
+      "title": "MiniMax H3 Reference to Video"
+    }
+  },
+  "138": {
+    "inputs": {
+      "value": "Use <Picture 1> as the Ferrari car sheet — the vehicle's exact body shape, proportions, panel lines, colorway, wheel design, badge placement, and interior trim. This is the hero product and must not change across any shot.\nUse <Picture 2> as the driver character sheet — the single human character's face, hair, build, and wardrobe. Same person in every shot in which a person appears; no other characters exist.\nUse <Picture 3> as the environment sheet — a 2x2 grid of four Shanghai locations. Each quadrant supplies the setting for exactly one shot, in this order: top-left quadrant for Shot 1, top-right quadrant for Shot 2, bottom-left quadrant for Shot 3, bottom-right quadrant for Shot 4. Take architecture, skyline silhouette, road surface, signage density, and ambient color from the assigned quadrant only — do not blend quadrants together or carry set dressing from one shot into another.\n\nStory:\n\n[0 to 4 seconds] Live-action automotive commercial, anamorphic, shallow depth of field, wet asphalt with specular highlights, fine grain and soft highlight halation. Wide establishing shot in the location from the top-left quadrant of <Picture 3>. The Ferrari from <Picture 1> enters frame from screen left and sweeps through the foreground; the camera executes a tracking shot at fast speed alongside the car, city light streaking across the bodywork as reflections travel nose to tail. Headlights carve into the damp road surface.\n\n[4 to 8 seconds] At 00:04.000, the camera cuts to the location from the top-right quadrant of <Picture 3>. The car is stationary at the curb. Interior three-quarter medium shot through the open driver's door: the driver from <Picture 2> settles into the seat, pulls the door shut, and places both hands on the wheel, eyes lifting to the road ahead. The camera pushes in with small amplitude at slow speed toward their face, then rack-focuses past them to the instrument cluster as it wakes. Their expression stays composed — a single slow exhale, no smile.\n\n[8 to 11.5 seconds] At 00:08.000, the shot cuts to the location from the bottom-left quadrant of <Picture 3>. Low-angle ground-level shot, camera mounted centimetres above the road. The Ferrari accelerates directly past the lens and out of frame; wide-angle perspective distortion, front wheel filling frame at the moment of the pass, water beading off the tyre wall. The camera pans right with large amplitude at fast speed to hold the car as it pulls away, exposure breathing as taillights bloom.\n\n[11.5 to 15 seconds] At 00:11.500, the shot cuts to the location from the bottom-right quadrant of <Picture 3>. Hero static shot, low three-quarter front angle, the car at rest with the skyline behind it. The driver from <Picture 2> stands a few steps away in profile, half-turned back toward the car, small in frame. The camera pushes in with small amplitude at slow speed and settles on the front badge from <Picture 1> as the headlights dim down one stage in the final second.\n\nPreserve: the Ferrari's exact silhouette, paint colorway, wheel spoke pattern, badge shape and placement, and cabin trim from <Picture 1> in all four shots. The driver's face, hairstyle, and full wardrobe from <Picture 2>, unchanged between Shot 2 and Shot 4. The distinct skyline and architecture of each assigned quadrant of <Picture 3>.\n\nAudio: dry V8 idle rising into a clean mid-range pull, tyre roll on wet asphalt, one solid door-latch thunk, seatbelt retractor click, distant city traffic and a faint far-off siren, a single controlled exhale from the driver, quiet electronic chime as the cluster wakes.\n\nMusic: sparse low synth pulse at slow tempo under Shot 1, a muted analogue arpeggio entering at 00:04, layered kick and sub-bass driving from 00:08, everything cutting to one sustained low tone as the camera settles on the badge at 00:13.\n\nNegatives: no other vehicles moving in frame, no pedestrians or additional characters, no on-screen text, subtitles, captions, logos, watermarks, or brand lettering of any kind, no Chinese or garbled characters, no misspellings, no soft dissolves or fades between shots, no lens flares or artificial light streaks added in post, no slow-motion ramping, no drifting, smoke, or stunt driving, no wing mirrors or body panels changing shape between shots, no interior color changes, no compositing seams, tearing, warped wheels, or black frames."
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "Input Text (Prompt)"
+    }
+  },
+  "141": {
+    "inputs": {
+      "image": "Ferrari Sheet.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "142": {
+    "inputs": {
+      "image": "Driver.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "143": {
+    "inputs": {
+      "image": "Environment.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  }
+}

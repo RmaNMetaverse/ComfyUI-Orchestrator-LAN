@@ -150,6 +150,88 @@ export class ComfyClient {
     return this.getJson('/queue');
   }
 
+  /**
+   * Which prompt ids this machine still knows about.
+   * Used to tell "queued behind other work" apart from "vanished", which /history alone
+   * cannot do - it stays empty for queued and running prompts alike.
+   */
+  async queueIds() {
+    const data = await this.getJson('/queue', { timeout: Math.min(this.timeout, 15000) });
+    const ids = (list) => (Array.isArray(list) ? list : []).map((item) => String(item?.[1] ?? '')).filter(Boolean);
+    return { running: new Set(ids(data.queue_running)), pending: new Set(ids(data.queue_pending)) };
+  }
+
+  /**
+   * Listen to this machine's event socket, so outputs can be collected the moment a node
+   * saves them instead of waiting for the whole prompt to finish.
+   *
+   * Returns a close function. Never throws: if the socket cannot be opened the caller
+   * carries on with plain polling.
+   */
+  connectEvents({ onExecuted, onStart, onError } = {}) {
+    let socket = null;
+    let closed = false;
+    let retries = 0;
+
+    const open = () => {
+      if (closed) return;
+      const url = `${this.baseUrl.replace(/^http/, 'ws')}/ws?clientId=${encodeURIComponent(this.clientId)}`;
+      try {
+        socket = new WebSocket(url);
+      } catch {
+        return; // no socket on this machine - polling still covers everything
+      }
+      socket.addEventListener('message', (event) => {
+        if (typeof event.data !== 'string') return; // binary preview frames
+        let message;
+        try {
+          message = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+        const data = message?.data || {};
+        if (message.type === 'executed' && data.prompt_id && data.output) {
+          const files = [];
+          for (const [kind, entries] of Object.entries(data.output)) {
+            if (!Array.isArray(entries)) continue;
+            for (const entry of entries) {
+              if (entry && typeof entry === 'object' && entry.filename) {
+                files.push({
+                  filename: String(entry.filename),
+                  subfolder: String(entry.subfolder || ''),
+                  type: String(entry.type || 'output'),
+                  nodeId: String(data.node ?? data.display_node ?? '?'),
+                  kind: String(kind),
+                });
+              }
+            }
+          }
+          if (files.length) onExecuted?.(String(data.prompt_id), files);
+        } else if (message.type === 'execution_start' && data.prompt_id) {
+          onStart?.(String(data.prompt_id));
+        } else if (message.type === 'execution_error' && data.prompt_id) {
+          onError?.(String(data.prompt_id), data);
+        }
+      });
+      socket.addEventListener('close', () => {
+        if (closed || retries >= 5) return;
+        retries += 1;
+        setTimeout(open, 1000 * retries);
+      });
+      socket.addEventListener('error', () => { /* the close handler retries */ });
+    };
+
+    open();
+    return () => {
+      closed = true;
+      try {
+        socket?.close();
+      } catch {
+        /* already gone */
+      }
+    };
+  }
+
   async queueRemaining() {
     const data = await this.getJson('/prompt', { timeout: Math.min(this.timeout, 8000) });
     return Number(data?.exec_info?.queue_remaining || 0);

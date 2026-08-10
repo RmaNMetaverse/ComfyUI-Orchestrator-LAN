@@ -130,22 +130,54 @@ function loadJobFrom(args) {
   return job;
 }
 
+/**
+ * Load every graph, apply its overrides, and work out which machine runs which.
+ * A job with one workflow and no assignments runs that workflow everywhere.
+ */
+function planJob(job, list) {
+  const applied = [];
+  for (const spec of job.workflows) {
+    spec.graph = Workflow.load(spec.path);
+    for (const line of spec.graph.applyOverrides(spec.overrides)) applied.push(`[${spec.name}] ${line}`);
+  }
+  if (!Object.keys(job.assignments).length) {
+    if (job.workflows.length > 1) {
+      throw new ConfigError('this job has several workflows but no "assignments" saying which machine runs which');
+    }
+    for (const client of list) job.assignments[client.name] = job.workflows[0].id;
+  }
+  const usable = list.filter((c) => job.assignments[c.name]);
+  const skipped = list.filter((c) => !job.assignments[c.name]).map((c) => c.name);
+  return { applied, usable, skipped };
+}
+
+function checkAssigned(job, list) {
+  return Promise.all(
+    list.map(async (client) => {
+      const spec = job.workflows.find((w) => w.id === job.assignments[client.name]);
+      const report = await checkMachine(client, spec.graph, assetNames(spec));
+      return { ...report, workflow: spec.name };
+    }),
+  );
+}
+
 async function cmdCheck(args) {
   const config = loadFleet();
   const job = loadJobFrom(args);
-  const workflow = Workflow.load(job.workflow);
-  workflow.applyOverrides(job.overrides);
   const list = clients(config, args.flags.only);
+  const { usable, skipped } = planJob(job, list);
 
-  log(`Job '${job.name}'  workflow=${path.basename(job.workflow)}  nodes=${workflow.nodes().length}  classes=${workflow.classTypes().size}`);
-  const seeds = workflow.seedNodes();
-  log(`Seed widgets found: ${seeds.length}${seeds.length ? ` (${seeds.map((s) => s.nodeId).join(', ')})` : ''}`);
-  const refs = [...new Set(workflow.assetRefs().map((r) => r.value))];
-  if (refs.length) log(`Input files referenced: ${refs.join(', ')}`);
-  log(`\nChecking ${list.length} machine(s) - this reads /object_info from each ...\n`);
+  log(`Job '${job.name}'  ${job.workflows.length} workflow(s)`);
+  for (const spec of job.workflows) {
+    const machines = usable.filter((c) => job.assignments[c.name] === spec.id).map((c) => c.name);
+    log(`  ${spec.name}: ${spec.graph.nodes().length} nodes, ${spec.graph.seedNodes().length} seed widget(s) -> ${machines.join(', ') || 'nobody'}`);
+    const refs = [...new Set(spec.graph.assetRefs().map((r) => r.value))];
+    if (refs.length) log(`    input files: ${refs.join(', ')}`);
+  }
+  if (skipped.length) log(`  no workflow assigned: ${skipped.join(', ')}`);
+  log(`\nChecking ${usable.length} machine(s) - this reads /object_info from each ...\n`);
 
-  const uploads = assetNames(job);
-  const reports = await Promise.all(list.map((c) => checkMachine(c, workflow, uploads)));
+  const reports = await checkAssigned(job, usable);
   log(formatReport(reports));
   const { ready, blocked } = summarize(reports);
   log(`\n${ready.length} ready, ${blocked.length} not ready`);
@@ -159,22 +191,25 @@ async function cmdCheck(args) {
 async function cmdRun(args) {
   const config = loadFleet();
   const job = loadJobFrom(args);
-  const workflow = Workflow.load(job.workflow);
-  const applied = workflow.applyOverrides(job.overrides);
-  let list = clients(config, args.flags.only);
+  const all = clients(config, args.flags.only);
+  const plan = planJob(job, all);
+  let list = plan.usable;
   const runId = args.flags['run-id'] || `${timestamp()}-${safeName(job.name)}`;
   const destRoot = job.collectDestination || config.collect.destination;
   const collect = config.collect.enabled && !args.flags['no-collect'];
 
   log(`Run     : ${runId}`);
-  log(`Workflow: ${job.workflow}`);
   log(`Mode    : ${job.mode}  count=${job.count}  seed=${job.seed}`);
-  for (const line of applied) log(`Override: ${line}`);
+  for (const spec of job.workflows) {
+    const machines = list.filter((c) => job.assignments[c.name] === spec.id).map((c) => c.name);
+    if (machines.length) log(`Workflow: '${spec.name}' -> ${machines.join(', ')}`);
+  }
+  if (plan.skipped.length) log(`Skipping: ${plan.skipped.join(', ')} (no workflow assigned)`);
+  for (const line of plan.applied) log(`Override: ${line}`);
 
   if (!args.flags['skip-check']) {
     log('\nPreflight:');
-    const uploads = assetNames(job);
-    const reports = await Promise.all(list.map((c) => checkMachine(c, workflow, uploads)));
+    const reports = await checkAssigned(job, list);
     log(formatReport(reports));
     const { ready, blocked } = summarize(reports);
     if (blocked.length) {
@@ -199,7 +234,7 @@ async function cmdRun(args) {
     return 0;
   }
 
-  const runner = new Runner({ fleet: config, job, workflow, clients: list, runId, log, collect, destRoot });
+  const runner = new Runner({ fleet: config, job, clients: list, runId, log, collect, destRoot });
   const stop = () => {
     log('\ninterrupted - clearing the queue on every machine ...');
     runner.abort().finally(() => process.exit(130));

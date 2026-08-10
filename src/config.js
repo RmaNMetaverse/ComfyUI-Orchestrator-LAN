@@ -24,7 +24,8 @@ export const FLEET_DEFAULTS = {
   name: 'studio',
   requestTimeout: 20000, // ms for ordinary API calls
   pollInterval: 2000, // ms between completion polls
-  stallTimeout: 1800000, // ms before a task is written off
+  stallTimeout: 3600000, // ms a task may spend *executing* before it is written off
+  //                        (time queued behind other work does not count)
 };
 
 export const COLLECT_DEFAULTS = {
@@ -119,30 +120,89 @@ export function enabledMachines(config, only = null) {
 
 export const JOB_DEFAULTS = {
   name: 'job',
-  workflow: '',
-  assets: [],
+  workflows: [], // [{ id, name, path, assets[], overrides[], count? }]
+  assignments: {}, // machine name -> workflow id
   mode: 'shard', // shard | mirror
   count: 1,
   seed: 'random', // number | 'random' | 'keep'
-  overrides: [],
   collectDestination: null,
 };
 
+/**
+ * A job holds one or more workflows, each with its own input files and overrides, plus
+ * which machine runs which. Older single-workflow job files are upgraded on load.
+ */
 export function normalizeJob(raw, { baseDir = null } = {}) {
-  const job = { ...JOB_DEFAULTS, ...(raw || {}) };
-  if (!job.workflow) throw new ConfigError('the job has no "workflow"');
+  const input = { ...(raw || {}) };
   const resolve = (p) => (path.isAbsolute(p) ? p : path.resolve(baseDir || process.cwd(), p));
-  job.workflow = resolve(String(job.workflow));
-  job.assets = (Array.isArray(job.assets) ? job.assets : [job.assets])
-    .filter(Boolean)
-    .map((p) => resolve(String(p)));
-  if (!['shard', 'mirror'].includes(job.mode)) throw new ConfigError('mode must be "shard" or "mirror"');
-  job.count = Math.max(1, Number(job.count) || 1);
-  job.overrides = normalizeOverrides(job.overrides);
-  if (!job.name || job.name === JOB_DEFAULTS.name) {
-    job.name = path.basename(job.workflow).replace(/\.json$/i, '') || 'job';
+  const toList = (v) => (Array.isArray(v) ? v : v ? [v] : []);
+
+  // upgrade the old shape: { workflow, assets, overrides }
+  let entries = toList(input.workflows);
+  if (!entries.length && input.workflow) {
+    entries = [{ path: input.workflow, assets: input.assets, overrides: input.overrides, name: input.name }];
   }
-  return job;
+  if (!entries.length) throw new ConfigError('the job has no workflows');
+
+  const seenIds = new Set();
+  const workflows = entries.map((entry, index) => {
+    if (typeof entry === 'string') entry = { path: entry };
+    const file = entry.path || entry.workflow;
+    if (!file) throw new ConfigError(`workflow ${index + 1} has no "path"`);
+    const resolved = resolve(String(file));
+    let id = String(entry.id || `w${index + 1}`);
+    while (seenIds.has(id)) id = `${id}_`;
+    seenIds.add(id);
+    return {
+      id,
+      name: String(entry.name || path.basename(resolved).replace(/\.json$/i, '')),
+      path: resolved,
+      assets: toList(entry.assets).filter(Boolean).map((p) => resolve(String(p))),
+      overrides: normalizeOverrides(entry.overrides),
+      count: entry.count ? Math.max(1, Number(entry.count)) : null,
+    };
+  });
+
+  const mode = input.mode || JOB_DEFAULTS.mode;
+  if (!['shard', 'mirror'].includes(mode)) throw new ConfigError('mode must be "shard" or "mirror"');
+
+  // assignments may name a workflow by id or by name; unknown ones are an error rather
+  // than a silent skip, because that would quietly run less work than asked for.
+  const byId = new Map(workflows.map((w) => [w.id, w]));
+  const byName = new Map(workflows.map((w) => [w.name, w]));
+  const assignments = {};
+  for (const [machine, wanted] of Object.entries(input.assignments || {})) {
+    if (!wanted) continue;
+    const match = byId.get(String(wanted)) || byName.get(String(wanted));
+    if (!match) throw new ConfigError(`machine "${machine}" is assigned to unknown workflow "${wanted}"`);
+    assignments[machine] = match.id;
+  }
+
+  return {
+    name: String(input.name || workflows[0].name || 'job'),
+    workflows,
+    assignments,
+    mode,
+    count: Math.max(1, Number(input.count) || 1),
+    seed: input.seed ?? JOB_DEFAULTS.seed,
+    collectDestination: input.collectDestination || null,
+  };
+}
+
+/** Machines that will actually run something, and what they will run. */
+export function resolveAssignments(job, machineNames) {
+  const groups = new Map(); // workflow id -> machine names
+  const unassigned = [];
+  for (const name of machineNames) {
+    const workflowId = job.assignments[name];
+    if (!workflowId) {
+      unassigned.push(name);
+      continue;
+    }
+    if (!groups.has(workflowId)) groups.set(workflowId, []);
+    groups.get(workflowId).push(name);
+  }
+  return { groups, unassigned };
 }
 
 export function loadJob(file) {

@@ -13,7 +13,7 @@ import http from 'node:http';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -35,6 +35,8 @@ const HOST = args.host || '127.0.0.1';
 const DELAY = Number(args.delay ?? 3) * 1000;
 const GPU = args.gpu || 'NVIDIA GeForce RTX 4090 (mock)';
 const ROOT = args.root || path.join(HERE, '_mock', NAME);
+// extra delay between announcing an output and finishing the prompt
+const TAIL = Number(args.tail ?? 0) * 1000;
 
 const INPUT_DIR = path.join(ROOT, 'input');
 const OUTPUT_DIR = path.join(ROOT, 'output');
@@ -165,6 +167,7 @@ async function worker() {
   while (state.queue.length) {
     const { promptId, prompt } = state.queue.shift();
     state.running.push(promptId);
+    broadcast({ type: 'execution_start', data: { prompt_id: promptId } });
     await new Promise((resolve) => setTimeout(resolve, DELAY));
     state.counter += 1;
     let seed = 0;
@@ -173,14 +176,59 @@ async function worker() {
     }
     const filename = `${NAME}_${String(state.counter).padStart(5, '0')}_.png`;
     fs.writeFileSync(path.join(OUTPUT_DIR, filename), makePng(64, 64, [(seed * 37) % 255, (seed * 91) % 255, (seed * 13) % 255]));
+    const images = [{ filename, subfolder: '', type: 'output' }];
+
+    // Real ComfyUI announces a save node's output the moment it runs, well before the
+    // whole prompt is finished. TAIL simulates the rest of the graph still working.
+    broadcast({ type: 'executed', data: { node: '9', display_node: '9', prompt_id: promptId, output: { images } } });
+    if (TAIL) await new Promise((resolve) => setTimeout(resolve, TAIL));
+
     state.history[promptId] = {
       prompt: [0, promptId, prompt, {}, []],
-      outputs: { 9: { images: [{ filename, subfolder: '', type: 'output' }] } },
+      outputs: { 9: { images } },
       status: { status_str: 'success', completed: true, messages: [] },
     };
+    broadcast({ type: 'execution_success', data: { prompt_id: promptId } });
     state.running = state.running.filter((id) => id !== promptId);
   }
   state.working = false;
+}
+
+/* ------------------------------------------------------- websocket ---- */
+
+const sockets = new Set();
+
+function broadcast(message) {
+  const payload = Buffer.from(JSON.stringify(message), 'utf8');
+  const header = payload.length < 126
+    ? Buffer.from([0x81, payload.length])
+    : Buffer.concat([Buffer.from([0x81, 126]), (() => {
+      const len = Buffer.alloc(2);
+      len.writeUInt16BE(payload.length);
+      return len;
+    })()]);
+  for (const socket of sockets) {
+    try {
+      socket.write(Buffer.concat([header, payload]));
+    } catch {
+      sockets.delete(socket);
+    }
+  }
+}
+
+function handleUpgrade(req, socket) {
+  const key = req.headers['sec-websocket-key'];
+  if (!key) return socket.destroy();
+  const accept = createHash('sha1').update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
+  socket.write(
+    'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n' +
+      `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
+  );
+  socket.setNoDelay(true);
+  sockets.add(socket);
+  socket.on('close', () => sockets.delete(socket));
+  socket.on('error', () => sockets.delete(socket));
+  socket.on('data', () => { /* clients only send pings; nothing to do */ });
 }
 
 /* ---------------------------------------------------------------- server */
@@ -274,6 +322,8 @@ const server = http.createServer(async (req, res) => {
 
   return json({ error: 'method not allowed' }, 405);
 });
+
+server.on('upgrade', (req, socket) => handleUpgrade(req, socket));
 
 server.listen(PORT, HOST, () => {
   console.log(`mock ComfyUI '${NAME}' on http://${HOST}:${PORT}  (${DELAY / 1000}s per job, root ${ROOT})`);

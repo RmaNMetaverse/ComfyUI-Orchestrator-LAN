@@ -13,7 +13,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { ComfyClient, WorkflowRejected } from '../src/client.js';
-import { normalizeJob, normalizeOverrides } from '../src/config.js';
+import { normalizeJob, normalizeOverrides, resolveAssignments } from '../src/config.js';
 import { expandTargets } from '../src/discover.js';
 import { checkMachine, enumOptions } from '../src/preflight.js';
 import { Runner, safeName, safePathPart } from '../src/runner.js';
@@ -37,10 +37,11 @@ function check(label, condition, detail = '') {
   }
 }
 
-function startMock({ port, name, delay = 0.4, root }) {
+function startMock({ port, name, delay = 0.4, root, tail = 0 }) {
   const child = spawn(
     process.execPath,
-    [path.join(ROOT, 'tools', 'mock-comfy.js'), '--port', String(port), '--name', name, '--delay', String(delay), '--root', root],
+    [path.join(ROOT, 'tools', 'mock-comfy.js'), '--port', String(port), '--name', name,
+      '--delay', String(delay), '--root', root, ...(tail ? ['--tail', String(tail)] : [])],
     { stdio: 'ignore' },
   );
   mocks.push(child);
@@ -63,6 +64,20 @@ const fleetFor = (machines, collect) => ({
   collect: { enabled: true, layout: '{run_id}/{machine}/{filename}', overwrite: false, ...collect },
   machines,
 });
+
+
+/** Build a normalized job whose graphs are loaded, mirroring what the server does. */
+function planned(raw, machineNames, baseDir = ROOT) {
+  const job = normalizeJob(raw, { baseDir });
+  for (const spec of job.workflows) {
+    spec.graph = Workflow.load(spec.path);
+    spec.graph.applyOverrides(spec.overrides);
+  }
+  if (!Object.keys(job.assignments).length) {
+    for (const name of machineNames) job.assignments[name] = job.workflows[0].id;
+  }
+  return job;
+}
 
 /* ══════════════════════════════════ unit ══════════════════════════════════ */
 
@@ -134,10 +149,11 @@ async function engineTests() {
   const workflowPath = path.join(ROOT, 'workflows', 'example_api.json');
   const workflow = Workflow.load(workflowPath);
   const dest = path.join(TMP, 'out');
-  const job = normalizeJob({ name: 'shardrun', workflow: workflowPath, mode: 'shard', count: 6, seed: 1000 });
+  const job = planned({ name: 'shardrun', workflow: workflowPath, mode: 'shard', count: 6, seed: 1000 },
+    machines.map((m) => m.name));
   const lines = [];
   const runner = new Runner({
-    fleet: fleetFor(machines, { destination: dest }), job, workflow, clients,
+    fleet: fleetFor(machines, { destination: dest }), job, clients,
     runId: 'run-shard', log: (l) => lines.push(l), collect: true, destRoot: dest,
   });
   await runner.uploadAssets();
@@ -154,9 +170,10 @@ async function engineTests() {
   check('seeds were distinct per task', new Set(runner.results.map((r) => r.seed)).size === 6);
 
   // ---- mirror mode
-  const mirrorJob = normalizeJob({ name: 'mirror', workflow: workflowPath, mode: 'mirror', count: 2, seed: 7 });
+  const mirrorJob = planned({ name: 'mirror', workflow: workflowPath, mode: 'mirror', count: 2, seed: 7 },
+    machines.map((m) => m.name));
   const mirrorRunner = new Runner({
-    fleet: fleetFor(machines, { destination: dest }), job: mirrorJob, workflow,
+    fleet: fleetFor(machines, { destination: dest }), job: mirrorJob,
     clients: machines.map((m) => new ComfyClient({ ...m, timeout: 10000 })),
     runId: 'run-mirror', log: () => {}, collect: false, destRoot: dest,
   });
@@ -196,8 +213,8 @@ async function engineTests() {
   const rejectLines = [];
   const rejectRunner = new Runner({
     fleet: fleetFor([machines[0]], { destination: dest, enabled: false }),
-    job: normalizeJob({ name: 'trim', workflow: trimmerPath, mode: 'shard', count: 2, seed: 'random' }),
-    workflow: trimmer, clients: [new ComfyClient({ ...machines[0], timeout: 10000 })],
+    job: planned({ name: 'trim', workflow: trimmerPath, mode: 'shard', count: 2, seed: 'random' }, ['MOCK-A']),
+    clients: [new ComfyClient({ ...machines[0], timeout: 10000 })],
     runId: 'run-reject', log: (l) => rejectLines.push(l), collect: false, destRoot: dest,
   });
   await rejectRunner.uploadAssets();
@@ -212,9 +229,9 @@ async function engineTests() {
   // ---- the same job works once the file is uploaded as an asset
   const asset = path.join(TMP, 'AI-Godal-Normal.mp4');
   fs.writeFileSync(asset, Buffer.alloc(2048));
-  const fixedJob = normalizeJob({ name: 'trim2', workflow: trimmerPath, assets: [asset], mode: 'shard', count: 2, seed: 'random' });
+  const fixedJob = planned({ name: 'trim2', workflow: trimmerPath, assets: [asset], mode: 'shard', count: 2, seed: 'random' }, ['MOCK-A']);
   const fixedRunner = new Runner({
-    fleet: fleetFor([machines[0]], { destination: dest }), job: fixedJob, workflow: trimmer,
+    fleet: fleetFor([machines[0]], { destination: dest }), job: fixedJob,
     clients: [new ComfyClient({ ...machines[0], timeout: 10000 })],
     runId: 'run-fixed', log: () => {}, collect: false, destRoot: dest,
   });
@@ -250,6 +267,91 @@ async function engineTests() {
   check('it is labelled as an input file', emptyInputReport.missingValues[0]?.kind === 'input',
     emptyInputReport.missingValues[0]?.kind);
 
+  // ---- two workflows, one per machine
+  const altPath = path.join(TMP, 'alt_api.json');
+  const base = JSON.parse(fs.readFileSync(workflowPath, 'utf8'));
+  base['6'].inputs.text = 'the other workflow';
+  fs.writeFileSync(altPath, JSON.stringify(base));
+
+  const splitJob = planned({
+    name: 'two-workflows',
+    workflows: [
+      { id: 'main', path: workflowPath, name: 'main' },
+      { id: 'alt', path: altPath, name: 'alt' },
+    ],
+    assignments: { 'MOCK-A': 'main', 'MOCK-B': 'alt' },
+    mode: 'shard', count: 4, seed: 1,
+  }, []);
+  const splitLines = [];
+  const splitRunner = new Runner({
+    fleet: fleetFor(machines, { destination: dest }), job: splitJob,
+    clients: machines.map((m) => new ComfyClient({ ...m, timeout: 10000 })),
+    runId: 'run-split', log: (l) => splitLines.push(l), collect: false, destRoot: dest,
+  });
+  await splitRunner.uploadAssets();
+  splitRunner.buildTasks();
+  const splitManifest = await splitRunner.run();
+
+  check('each workflow produces its own tasks', splitManifest.tasksTotal === 8, String(splitManifest.tasksTotal));
+  check('both workflows completed', splitManifest.tasksSucceeded === 8, JSON.stringify(splitManifest.failures));
+  check('each machine ran only its own workflow',
+    splitRunner.results.every((r) => (r.machine === 'MOCK-A' ? r.workflow === 'main' : r.workflow === 'alt')),
+    JSON.stringify(splitRunner.results.map((r) => `${r.machine}:${r.workflow}`)));
+  check('the manifest records the assignment',
+    splitManifest.workflows.find((w) => w.id === 'main').machines.join() === 'MOCK-A' &&
+    splitManifest.workflows.find((w) => w.id === 'alt').machines.join() === 'MOCK-B',
+    JSON.stringify(splitManifest.workflows));
+
+  // a machine may only take work for the workflow it is assigned
+  check('work is never handed to the wrong machine',
+    !splitLines.some((l) => l.includes('MOCK-A') && l.includes('alt')), splitLines.join('\n'));
+
+  // ---- outputs land as each task finishes, not at the end
+  const liveDest = path.join(TMP, 'live');
+  const liveJob = planned({ name: 'live', workflow: workflowPath, mode: 'shard', count: 4, seed: 3 }, ['MOCK-B']);
+  const liveRunner = new Runner({
+    fleet: fleetFor([machines[1]], { destination: liveDest }), job: liveJob,
+    clients: [new ComfyClient({ ...machines[1], timeout: 10000 })],
+    runId: 'run-live', log: () => {}, collect: true, destRoot: liveDest,
+  });
+  await liveRunner.uploadAssets();
+  liveRunner.buildTasks();
+  const livePromise = liveRunner.run();
+  // MOCK-B takes 0.8s per job, so by ~2.5s some files must already be on disk while
+  // the run is still going.
+  await sleep(2500);
+  const midRun = fs.existsSync(path.join(liveDest, 'run-live'))
+    ? fs.readdirSync(path.join(liveDest, 'run-live', 'MOCK-B')).filter((f) => f.endsWith('.png')).length
+    : 0;
+  const stillRunning = liveRunner.results.length < 4;
+  const liveManifest = await livePromise;
+  check('outputs are copied while the run is still going', midRun > 0 && stillRunning,
+    `${midRun} file(s) after 2.5s, ${liveRunner.results.length}/4 tasks done`);
+  check('every output still arrives', liveManifest.filesCollected === 4, String(liveManifest.filesCollected));
+  check('nothing was downloaded twice', new Set(liveManifest.files.map((f) => f.local)).size === 4);
+
+  // ---- the event socket hands us outputs before the prompt is finished
+  const tailRoot = path.join(TMP, 'mockTail');
+  startMock({ port: 8844, name: 'MOCK-TAIL', delay: 0.3, root: tailRoot, tail: 2 });
+  await waitFor('http://127.0.0.1:8844/system_stats');
+  const tailMachine = { name: 'MOCK-TAIL', host: '127.0.0.1', port: 8844, scheme: 'http', slots: 1, enabled: true, note: '' };
+  const tailDest = path.join(TMP, 'tailout');
+  const tailLines = [];
+  const tailRunner = new Runner({
+    fleet: fleetFor([tailMachine], { destination: tailDest }),
+    job: planned({ name: 'tail', workflow: workflowPath, mode: 'shard', count: 1, seed: 11 }, ['MOCK-TAIL']),
+    clients: [new ComfyClient({ ...tailMachine, timeout: 10000 })],
+    runId: 'run-tail', log: (l) => tailLines.push(l), collect: true, destRoot: tailDest,
+  });
+  await tailRunner.uploadAssets();
+  tailRunner.buildTasks();
+  const tailManifest = await tailRunner.run();
+  const savedAt = tailLines.findIndex((l) => l.includes('saved'));
+  const finishedAt = tailLines.findIndex((l) => l.includes('finished task'));
+  check('the file is fetched before the prompt reports finished',
+    savedAt !== -1 && finishedAt !== -1 && savedAt < finishedAt, tailLines.join(' | '));
+  check('and it is only fetched once', tailManifest.filesCollected === 1, String(tailManifest.filesCollected));
+
   // ---- a machine that dies mid-run
   const rootC = path.join(TMP, 'mockC');
   const dying = startMock({ port: 8843, name: 'MOCK-C', delay: 0.5, root: rootC });
@@ -257,8 +359,9 @@ async function engineTests() {
   const withDying = [...machines, { name: 'MOCK-C', host: '127.0.0.1', port: 8843, scheme: 'http', slots: 2, enabled: true, note: '' }];
   const dyingRunner = new Runner({
     fleet: fleetFor(withDying, { destination: dest }),
-    job: normalizeJob({ name: 'resilient', workflow: workflowPath, mode: 'shard', count: 14, seed: 500 }),
-    workflow, clients: withDying.map((m) => new ComfyClient({ ...m, timeout: 5000 })),
+    job: planned({ name: 'resilient', workflow: workflowPath, mode: 'shard', count: 14, seed: 500 },
+      withDying.map((m) => m.name)),
+    clients: withDying.map((m) => new ComfyClient({ ...m, timeout: 5000 })),
     runId: 'run-dying', log: () => {}, collect: false, destRoot: dest,
   });
   await dyingRunner.uploadAssets();
@@ -398,7 +501,9 @@ async function runWebChecks() {
   check('files were collected to the chosen folder', done?.manifest?.filesCollected === 4);
   check('progress events were streamed', events.some((e) => e.type === 'progress' && e.total === 4));
   check('log lines were streamed', events.some((e) => e.type === 'log' && e.line.includes('=== run')));
-  check('the override was applied', events.some((e) => e.type === 'log' && e.line.includes('override: 6.text')));
+  check('the override was applied, tagged with its workflow',
+    events.some((e) => e.type === 'log' && /override: \[.+\] 6\.text/.test(e.line)),
+    JSON.stringify(events.filter((e) => e.type === 'log' && e.line.includes('override')).map((e) => e.line)));
   check('busy toggled off at the end', events.filter((e) => e.type === 'busy').at(-1)?.busy === false);
 
   const outFiles = fs.readdirSync(path.join(TMP, 'webout', started.data.runId, 'MOCK-A'));

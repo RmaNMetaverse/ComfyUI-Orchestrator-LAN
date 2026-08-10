@@ -6,14 +6,21 @@ const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const state = {
   config: { fleet: {}, collect: {}, machines: [] },
   status: new Map(), // machine name -> ping result
-  workflow: null, // { path, name, outline, ... }
-  assets: [],
-  overrides: [],
+  // every workflow in the job: { id, name, path, info, assets[], overrides[] }
+  workflows: [],
+  selected: null, // id of the workflow whose files/overrides/nodes are shown
+  assignments: {}, // machine name -> workflow id
   busy: false,
   kind: null,
   progress: null,
   expandedNodes: new Set(),
 };
+
+let nextWorkflowId = 1;
+const newWorkflowId = () => `w${nextWorkflowId++}`;
+
+const selectedWorkflow = () => state.workflows.find((w) => w.id === state.selected) || null;
+const workflowById = (id) => state.workflows.find((w) => w.id === id) || null;
 
 /* ────────────────────────────────── utils ────────────────────────────────── */
 
@@ -153,12 +160,27 @@ function machineCard(machine, index) {
           </div>
           <p class="mt-0.5 truncate text-[12px] text-ios-gray">${detail}</p>
         </div>
-        <div class="flex gap-1.5">
+        <div class="flex items-center gap-1.5">
+          ${assignPicker(machine)}
           <button class="btn-tiny" data-edit="${index}">Edit</button>
           <button class="btn-tiny danger" data-remove="${index}">Remove</button>
         </div>
       </div>
     </div>`;
+}
+
+/** Which workflow this machine runs. Hidden until there is something to choose. */
+function assignPicker(machine) {
+  if (!state.workflows.length) return '';
+  const current = state.assignments[machine.name] || '';
+  const options = [
+    `<option value=""${current ? '' : ' selected'}>— no workflow —</option>`,
+    ...state.workflows.map(
+      (w) => `<option value="${esc(w.id)}"${w.id === current ? ' selected' : ''}>${esc(w.name)}</option>`,
+    ),
+  ].join('');
+  return `<select class="field !py-1.5 !text-[12px] max-w-[13rem]" data-assign="${esc(machine.name)}"
+                  title="Workflow this machine runs">${options}</select>`;
 }
 
 function renderMachines() {
@@ -209,6 +231,15 @@ $('#machine-list').addEventListener('click', (event) => {
 });
 
 $('#machine-list').addEventListener('change', (event) => {
+  const assign = event.target.closest('[data-assign]');
+  if (assign) {
+    const machine = assign.dataset.assign;
+    if (assign.value) state.assignments[machine] = assign.value;
+    else delete state.assignments[machine];
+    renderWorkflows();
+    saveUi();
+    return;
+  }
   const toggle = event.target.closest('[data-toggle]');
   if (!toggle) return;
   state.config.machines[Number(toggle.dataset.toggle)].enabled = toggle.checked;
@@ -252,46 +283,108 @@ async function refreshStatus() {
 
 /* ─────────────────────────────── workflow ────────────────────────────────── */
 
-function renderWorkflow() {
-  const info = $('#workflow-info');
+function renderWorkflows() {
+  const list = $('#workflow-list');
   const zone = $('#drop-zone');
-  if (!state.workflow) {
-    info.classList.add('hidden');
-    zone.classList.remove('hidden');
-    $('#node-tree').innerHTML = '<p class="px-3 py-6 text-center text-[12px] text-ios-gray">Choose a workflow to see its nodes.</p>';
+  const panels = $('#selected-panels');
+
+  zone.classList.toggle('hidden', state.workflows.length > 0);
+  panels.classList.toggle('hidden', !state.workflows.length);
+
+  if (!state.workflows.length) {
+    list.innerHTML = '';
+    state.selected = null;
+    $('#node-tree').innerHTML =
+      '<p class="px-3 py-6 text-center text-[12px] text-ios-gray">Add a workflow to see its nodes.</p>';
+    renderMachines();
     return;
   }
-  zone.classList.add('hidden');
-  info.classList.remove('hidden');
 
-  const wf = state.workflow;
-  const chip = (label) => `<span class="pill">${label}</span>`;
-  info.innerHTML = `
-    <div class="flex items-center gap-3 rounded-xl bg-black/4 dark:bg-white/6 p-3">
-      <div class="grid size-9 flex-none place-items-center rounded-[9px] bg-ios-blue/15">
-        <svg class="size-5 fill-ios-blue" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Zm0 2 4 4h-4V4Z"/></svg>
-      </div>
-      <div class="min-w-0 flex-1">
-        <p class="truncate text-[13px] font-semibold">${esc(wf.name)}</p>
-        <p class="truncate font-mono text-[11px] text-ios-gray">${esc(wf.path)}</p>
-      </div>
-      <button class="btn-tiny" data-action="browse-workflow">Change</button>
-      <button class="btn-tiny danger" data-action="clear-workflow">Remove</button>
-    </div>
-    <div class="mt-2 flex flex-wrap gap-1.5">
-      ${chip(`${wf.nodeCount} nodes`)}${chip(`${wf.classCount} node types`)}
-      ${chip(`${wf.seedWidgets} seed widget${wf.seedWidgets === 1 ? '' : 's'}`)}
-      ${wf.assetRefs.length ? chip(`needs ${wf.assetRefs.map(esc).join(', ')}`) : ''}
-    </div>`;
+  if (!workflowById(state.selected)) state.selected = state.workflows[0].id;
 
+  list.innerHTML = state.workflows
+    .map((wf) => {
+      const chosen = wf.id === state.selected;
+      const machines = Object.entries(state.assignments)
+        .filter(([, id]) => id === wf.id)
+        .map(([machine]) => machine);
+      const info = wf.info;
+      const chips = info
+        ? `${info.nodeCount} nodes · ${info.seedWidgets} seed${info.seedWidgets === 1 ? '' : 's'}` +
+          `${wf.assets.length ? ` · ${wf.assets.length} input file${wf.assets.length === 1 ? '' : 's'}` : ''}` +
+          `${wf.overrides.length ? ` · ${wf.overrides.length} override${wf.overrides.length === 1 ? '' : 's'}` : ''}`
+        : 'could not be read';
+      return `
+        <div class="rounded-xl border ${chosen ? 'border-ios-blue bg-ios-blue/8' : 'border-black/8 dark:border-white/10 bg-black/3 dark:bg-white/5'}
+                    p-3 transition cursor-pointer" data-pick-workflow="${esc(wf.id)}">
+          <div class="flex items-center gap-3">
+            <div class="grid size-9 flex-none place-items-center rounded-[9px] ${chosen ? 'bg-ios-blue/20' : 'bg-black/6 dark:bg-white/10'}">
+              <svg class="size-5 ${chosen ? 'fill-ios-blue' : 'fill-current opacity-50'}" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Zm0 2 4 4h-4V4Z"/></svg>
+            </div>
+            <div class="min-w-0 flex-1">
+              <p class="truncate text-[13px] font-semibold">${esc(wf.name)}</p>
+              <p class="truncate text-[11px] text-ios-gray">${esc(chips)}</p>
+            </div>
+            <button class="btn-tiny" data-assign-all="${esc(wf.id)}" title="Run this on every machine">All machines</button>
+            <button class="btn-tiny danger" data-remove-workflow="${esc(wf.id)}">Remove</button>
+          </div>
+          ${machines.length
+            ? `<p class="mt-2 flex flex-wrap gap-1.5">${machines.map((m) => `<span class="pill pill-blue">${esc(m)}</span>`).join('')}</p>`
+            : '<p class="mt-2 text-[11px] text-ios-orange">not assigned to any machine yet</p>'}
+        </div>`;
+    })
+    .join('');
+
+  for (const el of $$('[data-selected-name]')) el.textContent = selectedWorkflow()?.name || '';
   renderNodeTree();
-  checkAssetCoverage();
+  renderAssets();
+  renderOverrides();
+  renderMachines();
 }
+
+$('#workflow-list').addEventListener('click', (event) => {
+  const remove = event.target.closest('[data-remove-workflow]');
+  if (remove) {
+    event.stopPropagation();
+    const id = remove.dataset.removeWorkflow;
+    const wf = workflowById(id);
+    state.workflows = state.workflows.filter((w) => w.id !== id);
+    for (const [machine, assigned] of Object.entries(state.assignments)) {
+      if (assigned === id) delete state.assignments[machine];
+    }
+    if (state.selected === id) state.selected = state.workflows[0]?.id || null;
+    renderWorkflows();
+    saveUi();
+    toast(`Removed ${wf?.name || 'workflow'}`);
+    return;
+  }
+  const assignAll = event.target.closest('[data-assign-all]');
+  if (assignAll) {
+    event.stopPropagation();
+    const id = assignAll.dataset.assignAll;
+    for (const machine of state.config.machines) state.assignments[machine.name] = id;
+    renderWorkflows();
+    saveUi();
+    toast(`Every machine will run ${workflowById(id)?.name}`, 'good');
+    return;
+  }
+  const pick = event.target.closest('[data-pick-workflow]');
+  if (pick && pick.dataset.pickWorkflow !== state.selected) {
+    state.selected = pick.dataset.pickWorkflow;
+    state.expandedNodes = new Set();
+    renderWorkflows();
+    saveUi();
+  }
+});
 
 function renderNodeTree() {
   const tree = $('#node-tree');
-  if (!state.workflow) return;
-  tree.innerHTML = state.workflow.outline
+  const wf = selectedWorkflow();
+  if (!wf?.info) {
+    tree.innerHTML = '<p class="px-3 py-6 text-center text-[12px] text-ios-gray">Add a workflow to see its nodes.</p>';
+    return;
+  }
+  tree.innerHTML = wf.info.outline
     .map((node) => {
       const open = state.expandedNodes.has(node.id);
       const widgets = node.widgets
@@ -334,32 +427,68 @@ $('#node-tree').addEventListener('click', (event) => {
   }
 });
 
-async function loadWorkflow(payload) {
+/** Add a workflow to the job (or refresh one that is already there). */
+async function loadWorkflow(payload, { replaceId = null } = {}) {
+  let info;
   try {
-    state.workflow = await api('/api/workflow', { method: 'POST', body: payload });
-    state.expandedNodes = new Set();
-    renderWorkflow();
-    saveUi();
-    toast(`Loaded ${state.workflow.name}`, 'good');
+    info = await api('/api/workflow', { method: 'POST', body: payload });
   } catch (err) {
-    toast(err.message, 'error');
+    return toast(err.message, 'error');
   }
+
+  const existing = replaceId
+    ? workflowById(replaceId)
+    : state.workflows.find((w) => w.path.toLowerCase() === info.path.toLowerCase());
+
+  if (existing) {
+    existing.info = info;
+    existing.name = info.name.replace(/\.json$/i, '');
+    existing.path = info.path;
+    state.selected = existing.id;
+    toast(`Reloaded ${existing.name}`, 'good');
+  } else {
+    const entry = {
+      id: newWorkflowId(),
+      name: info.name.replace(/\.json$/i, ''),
+      path: info.path,
+      info,
+      assets: [],
+      overrides: [],
+    };
+    state.workflows.push(entry);
+    state.selected = entry.id;
+    // First one added? Nothing is assigned yet, so put it on every machine - the common case.
+    if (state.workflows.length === 1) {
+      for (const machine of state.config.machines) state.assignments[machine.name] = entry.id;
+    }
+    toast(`Added ${entry.name}`, 'good');
+  }
+  state.expandedNodes = new Set();
+  renderWorkflows();
+  saveUi();
 }
 
-// drag and drop a workflow json onto the page
+// drag and drop workflow json files onto the page
 const zone = $('#drop-zone');
 ['dragenter', 'dragover'].forEach((type) =>
   zone.addEventListener(type, (e) => { e.preventDefault(); zone.classList.add('dragging'); }));
 ['dragleave', 'drop'].forEach((type) =>
   zone.addEventListener(type, (e) => { e.preventDefault(); zone.classList.remove('dragging'); }));
-zone.addEventListener('drop', async (event) => {
-  const file = event.dataTransfer.files?.[0];
-  if (!file) return;
-  if (!file.name.toLowerCase().endsWith('.json')) return toast('That is not a .json workflow', 'error');
-  try {
-    loadWorkflow({ name: file.name, data: JSON.parse(await file.text()) });
-  } catch {
-    toast('That file is not valid JSON', 'error');
+document.addEventListener('dragover', (e) => e.preventDefault());
+document.addEventListener('drop', async (event) => {
+  const files = [...(event.dataTransfer?.files || [])];
+  if (!files.length) return;
+  event.preventDefault();
+  for (const file of files) {
+    if (!file.name.toLowerCase().endsWith('.json')) {
+      toast(`${file.name} is not a .json workflow`, 'error');
+      continue;
+    }
+    try {
+      await loadWorkflow({ name: file.name, data: JSON.parse(await file.text()) });
+    } catch {
+      toast(`${file.name} is not valid JSON`, 'error');
+    }
   }
 });
 
@@ -367,11 +496,13 @@ zone.addEventListener('drop', async (event) => {
 
 function renderAssets() {
   const list = $('#asset-list');
-  $('#clear-assets')?.classList.toggle('hidden', !state.assets.length);
-  if (!state.assets.length) {
+  const wf = selectedWorkflow();
+  const assets = wf?.assets || [];
+  $('#clear-assets')?.classList.toggle('hidden', !assets.length);
+  if (!assets.length) {
     list.innerHTML = '<p class="px-4 pb-1 pt-0 text-[12px] text-ios-gray">Nothing added. Only needed if the workflow loads a video, image or audio file.</p>';
   } else {
-    list.innerHTML = state.assets
+    list.innerHTML = assets
       .map(
         (asset, index) => `
         <div class="flex items-center gap-3 px-4 py-2.5">
@@ -390,9 +521,10 @@ function renderAssets() {
 
 /** Warn in the UI when the workflow needs an input file nobody has added. */
 function checkAssetCoverage() {
-  if (!state.workflow?.assetRefs?.length) return;
-  const have = new Set(state.assets.map((a) => fileName(a).toLowerCase()));
-  const missing = state.workflow.assetRefs.filter((ref) => !have.has(fileName(ref).toLowerCase()));
+  const wf = selectedWorkflow();
+  if (!wf?.info?.assetRefs?.length) return;
+  const have = new Set((wf.assets || []).map((a) => fileName(a).toLowerCase()));
+  const missing = wf.info.assetRefs.filter((ref) => !have.has(fileName(ref).toLowerCase()));
   const list = $('#asset-list');
   if (!missing.length || !list) return;
   const note = document.createElement('div');
@@ -406,8 +538,8 @@ function checkAssetCoverage() {
 $('#asset-list').addEventListener('click', (event) => {
   const remove = event.target.closest('[data-remove-asset]');
   if (!remove) return;
-  state.assets.splice(Number(remove.dataset.removeAsset), 1);
-  renderAssets();
+  selectedWorkflow()?.assets.splice(Number(remove.dataset.removeAsset), 1);
+  renderWorkflows();
   saveUi();
 });
 
@@ -415,11 +547,12 @@ $('#asset-list').addEventListener('click', (event) => {
 
 function renderOverrides() {
   const list = $('#override-list');
-  if (!state.overrides.length) {
+  const overrides = selectedWorkflow()?.overrides || [];
+  if (!overrides.length) {
     list.innerHTML = '<p class="px-4 pb-1 text-[12px] text-ios-gray">None. Tap a setting in the node list to override it.</p>';
     return;
   }
-  list.innerHTML = state.overrides
+  list.innerHTML = overrides
     .map((o, index) => {
       const by = o.node ? 'node' : o.title ? 'title' : 'class';
       const target = o.node || o.title || o.class;
@@ -445,8 +578,8 @@ $('#override-list').addEventListener('click', (event) => {
   const remove = event.target.closest('[data-remove-override]');
   if (edit) return overrideDialog(Number(edit.dataset.editOverride));
   if (remove) {
-    state.overrides.splice(Number(remove.dataset.removeOverride), 1);
-    renderOverrides();
+    selectedWorkflow()?.overrides.splice(Number(remove.dataset.removeOverride), 1);
+    renderWorkflows();
     saveUi();
   }
 });
@@ -526,8 +659,17 @@ function machineDialog(index = null) {
           slots: Math.max(1, Number(get('slots')) || 1),
           note: get('note'),
         };
-        if (index === null) state.config.machines.push(updated);
-        else state.config.machines[index] = updated;
+        if (index === null) {
+          state.config.machines.push(updated);
+          if (state.workflows.length === 1) state.assignments[updated.name] = state.workflows[0].id;
+        } else {
+          const previous = state.config.machines[index].name;
+          if (previous !== updated.name && state.assignments[previous]) {
+            state.assignments[updated.name] = state.assignments[previous];
+            delete state.assignments[previous];
+          }
+          state.config.machines[index] = updated;
+        }
         close();
         renderMachines();
         saveFleet(true);
@@ -537,7 +679,8 @@ function machineDialog(index = null) {
 }
 
 function overrideDialog(index = null, prefill = null) {
-  const existing = index === null ? null : state.overrides[index];
+  const list = selectedWorkflow()?.overrides || [];
+  const existing = index === null ? null : list[index];
   const by = existing ? (existing.node ? 'node' : existing.title ? 'title' : 'class') : 'node';
   const target = existing ? existing.node || existing.title || existing.class : prefill?.node || '';
   const field = existing ? existing.field : prefill?.field || '';
@@ -581,10 +724,10 @@ function overrideDialog(index = null, prefill = null) {
           field: fieldValue,
           value: coerce(raw),
         };
-        if (index === null) state.overrides.push(override);
-        else state.overrides[index] = override;
+        if (index === null) list.push(override);
+        else list[index] = override;
         close();
-        renderOverrides();
+        renderWorkflows();
         saveUi();
       };
     },
@@ -737,13 +880,17 @@ function discoverDialog() {
 
 function jobPayload() {
   return {
-    name: state.workflow ? state.workflow.name.replace(/\.json$/i, '') : 'job',
-    workflow: state.workflow?.path,
-    assets: state.assets,
+    name: state.workflows.length === 1 ? state.workflows[0].name : 'fleet-job',
+    workflows: state.workflows.map((w) => ({
+      id: w.id, name: w.name, path: w.path, assets: w.assets, overrides: w.overrides,
+    })),
+    assignments: Object.fromEntries(
+      Object.entries(state.assignments).filter(([machine, id]) =>
+        workflowById(id) && state.config.machines.some((m) => m.name === machine && m.enabled)),
+    ),
     mode: $('input[name="mode"]:checked').value,
     count: Number($('#count').value) || 1,
     seed: seedValue(),
-    overrides: state.overrides,
     machines: state.config.machines.filter((m) => m.enabled).map((m) => m.name),
     preflight: $('#preflight').checked,
     collect: {
@@ -763,9 +910,15 @@ function seedValue() {
 }
 
 function guard() {
-  if (!state.workflow) {
+  if (!state.workflows.length) {
     selectTab('workflow');
-    toast('Choose a workflow first', 'error');
+    toast('Add a workflow first', 'error');
+    return false;
+  }
+  const enabled = state.config.machines.filter((m) => m.enabled);
+  if (enabled.length && !enabled.some((m) => workflowById(state.assignments[m.name]))) {
+    selectTab('machines');
+    toast('Assign a workflow to at least one machine', 'error');
     return false;
   }
   if (!state.config.machines.some((m) => m.enabled)) {
@@ -905,36 +1058,35 @@ document.addEventListener('click', (event) => {
     'browse-workflow': async () => {
       const [chosen] = await choosePaths({
         kind: 'file', filter: 'workflow', title: 'Choose an API workflow',
-        initial: state.workflow?.path || '',
+        initial: selectedWorkflow()?.path || '',
       });
       if (chosen) loadWorkflow({ path: chosen });
     },
-    'clear-workflow': () => {
-      state.workflow = null;
-      state.expandedNodes = new Set();
-      renderWorkflow();
-      saveUi();
-      toast('Workflow removed');
-    },
+
     'add-asset-file': async () => {
       const paths = await choosePaths({ kind: 'files', filter: 'media', title: 'Add input files' });
-      const added = paths.filter((p) => !state.assets.includes(p));
-      state.assets.push(...added);
-      renderAssets();
+      const wf = selectedWorkflow();
+      if (!wf) return;
+      const added = paths.filter((p) => !wf.assets.includes(p));
+      wf.assets.push(...added);
+      renderWorkflows();
       saveUi();
       if (added.length) toast(`Added ${added.length} file${added.length === 1 ? '' : 's'}`, 'good');
     },
     'add-asset-folder': async () => {
       const [chosen] = await choosePaths({ kind: 'folder', title: 'Add a folder of input files' });
-      if (chosen && !state.assets.includes(chosen)) {
-        state.assets.push(chosen);
-        renderAssets();
+      const wf = selectedWorkflow();
+      if (wf && chosen && !wf.assets.includes(chosen)) {
+        wf.assets.push(chosen);
+        renderWorkflows();
         saveUi();
       }
     },
     'clear-assets': () => {
-      state.assets = [];
-      renderAssets();
+      const wf = selectedWorkflow();
+      if (!wf) return;
+      wf.assets = [];
+      renderWorkflows();
       saveUi();
     },
     'add-override': () => overrideDialog(null),
@@ -990,9 +1142,11 @@ function saveUi() {
     api('/api/ui', {
       method: 'PUT',
       body: {
-        workflow: state.workflow?.path || '',
-        assets: state.assets,
-        overrides: state.overrides,
+        workflows: state.workflows.map((w) => ({
+          id: w.id, name: w.name, path: w.path, assets: w.assets, overrides: w.overrides,
+        })),
+        selected: state.selected,
+        assignments: state.assignments,
         mode: $('input[name="mode"]:checked').value,
         count: Number($('#count').value) || 1,
         seedMode: $('#seed-mode .seg-item[aria-selected="true"]').dataset.seed,
@@ -1016,8 +1170,7 @@ async function boot() {
 
   state.config = data.config;
   const ui = data.ui || {};
-  state.assets = ui.assets || [];
-  state.overrides = ui.overrides || [];
+  state.assignments = ui.assignments || {};
 
   $('#destination').value = data.config.collect.destination || '';
   $('#layout').value = data.config.collect.layout || '{run_id}/{machine}/{filename}';
@@ -1033,17 +1186,29 @@ async function boot() {
   if (seedItem) seedItem.click();
 
   renderMachines();
-  renderAssets();
-  renderOverrides();
 
-  if (ui.workflow) {
+  // Restore the workflow list. Anything whose file has moved since last time is dropped,
+  // with a note, rather than failing the whole page.
+  const saved = ui.workflows?.length ? ui.workflows : ui.workflow ? [{ path: ui.workflow }] : [];
+  for (const entry of saved) {
     try {
-      state.workflow = await api('/api/workflow', { method: 'POST', body: { path: ui.workflow } });
+      const info = await api('/api/workflow', { method: 'POST', body: { path: entry.path } });
+      const id = entry.id || newWorkflowId();
+      nextWorkflowId = Math.max(nextWorkflowId, Number(String(id).replace(/\D/g, '')) + 1 || nextWorkflowId);
+      state.workflows.push({
+        id,
+        name: entry.name || info.name.replace(/\.json$/i, ''),
+        path: info.path,
+        info,
+        assets: entry.assets || ui.assets || [],
+        overrides: entry.overrides || ui.overrides || [],
+      });
     } catch {
-      state.workflow = null; // the file moved or was deleted since last time
+      toast(`${fileName(entry.path)} could not be opened - removed from the list`, 'error');
     }
   }
-  renderWorkflow();
+  state.selected = state.workflows.some((w) => w.id === ui.selected) ? ui.selected : state.workflows[0]?.id || null;
+  renderWorkflows();
 
   for (const entry of data.log || []) appendLog(entry.line);
   setBusy(data.busy, data.kind);

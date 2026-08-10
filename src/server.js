@@ -11,7 +11,7 @@ import { exec } from 'node:child_process';
 
 import { clientFor, ComfyClient } from './client.js';
 import {
-  COLLECT_DEFAULTS, ConfigError, emptyFleet, loadFleet, normalizeJob, normalizeOverrides, saveFleet,
+  COLLECT_DEFAULTS, ConfigError, emptyFleet, loadFleet, normalizeJob, resolveAssignments, saveFleet,
 } from './config.js';
 import { DEFAULT_PORTS, scan } from './discover.js';
 import { FLEET_PATH, JOBS_DIR, PUBLIC_DIR, UI_STATE_PATH, WORKFLOW_DIR } from './paths.js';
@@ -120,52 +120,88 @@ function prepare(payload) {
     ...config.collect,
     ...(payload.collect || {}),
   };
+
   const job = normalizeJob(
     {
-      name: payload.name || (payload.workflow ? path.basename(payload.workflow).replace(/\.json$/i, '') : 'job'),
+      name: payload.name || 'job',
+      workflows: payload.workflows,
+      // still accepted so older saved jobs and scripts keep working
       workflow: payload.workflow,
-      assets: payload.assets || [],
+      assets: payload.assets,
+      overrides: payload.overrides,
+      assignments: payload.assignments || {},
       mode: payload.mode || 'shard',
       count: payload.count || 1,
       seed: payload.seed ?? 'random',
-      overrides: normalizeOverrides(payload.overrides || []),
       collectDestination: collect.destination,
     },
     { baseDir: WORKFLOW_DIR },
   );
 
-  const workflow = Workflow.load(job.workflow);
-  const applied = workflow.applyOverrides(job.overrides);
+  // Load each graph once and apply its own overrides, so a bad override is reported
+  // before anything is queued anywhere.
+  const applied = [];
+  for (const spec of job.workflows) {
+    spec.graph = Workflow.load(spec.path);
+    for (const line of spec.graph.applyOverrides(spec.overrides)) {
+      applied.push(`[${spec.name}] ${line}`);
+    }
+  }
 
   const clients = clientsFor(config, payload.machines);
   if (!clients.length) throw new ConfigError('No machines are selected. Add one on the Machines tab and switch it on.');
 
-  return { config: { ...config, collect }, job, workflow, clients, applied };
+  // A single workflow with nothing assigned runs everywhere - that is the obvious intent
+  // and keeps the simple case simple.
+  if (!Object.keys(job.assignments).length) {
+    if (job.workflows.length > 1) {
+      throw new ConfigError('Assign a workflow to each machine on the Machines tab before running.');
+    }
+    for (const client of clients) job.assignments[client.name] = job.workflows[0].id;
+  }
+
+  const { unassigned } = resolveAssignments(job, clients.map((c) => c.name));
+  const usable = clients.filter((c) => job.assignments[c.name]);
+  if (!usable.length) {
+    throw new ConfigError('No machine has a workflow assigned. Pick one for each machine on the Machines tab.');
+  }
+
+  return { config: { ...config, collect }, job, clients: usable, applied, unassigned };
 }
 
 /* ------------------------------------------------------------- actions */
 
+/** Check every machine against the workflow it is actually going to run. */
+function checkAssigned(job, clients) {
+  return Promise.all(
+    clients.map(async (client) => {
+      const spec = job.workflows.find((w) => w.id === job.assignments[client.name]);
+      const report = await checkMachine(client, spec.graph, assetNames(spec));
+      return { ...report, workflow: spec.name };
+    }),
+  );
+}
+
 async function startCheck(payload) {
-  const { job, workflow, clients } = prepare(payload);
+  const { job, clients } = prepare(payload);
   run.busy = true;
   run.kind = 'check';
   broadcast({ type: 'busy', busy: true, kind: 'check' });
   pushLog('');
-  pushLog(`checking ${clients.length} machine(s) for the nodes and files this workflow needs ...`);
+  pushLog(`checking ${clients.length} machine(s) against the workflow each one will run ...`);
 
   try {
-    const uploads = assetNames(job);
-    const reports = await Promise.all(clients.map((c) => checkMachine(c, workflow, uploads)));
+    const reports = await checkAssigned(job, clients);
     for (const report of [...reports].sort((a, b) => a.machine.localeCompare(b.machine))) {
       if (!report.reachable) {
         pushLog(`  ! ${report.machine}: ${report.error}`);
         continue;
       }
       if (report.ok) {
-        pushLog(`  + ${report.machine}: ready (ComfyUI ${report.comfyuiVersion}, ${report.gpu})`);
+        pushLog(`  + ${report.machine}: ready for '${report.workflow}' (ComfyUI ${report.comfyuiVersion}, ${report.gpu})`);
         continue;
       }
-      pushLog(`  ! ${report.machine}: not ready`);
+      pushLog(`  ! ${report.machine}: not ready for '${report.workflow}'`);
       for (const cls of report.missingClasses) pushLog(`      missing custom node: ${cls}`);
       for (const missing of report.missingValues) pushLog(`      ${describeMissingLine(missing)}`);
     }
@@ -203,7 +239,7 @@ function hintsFor(reports) {
 const describeMissingLine = describeMissing;
 
 async function startRun(payload) {
-  const { config, job, workflow, clients, applied } = prepare(payload);
+  const { config, job, clients, applied, unassigned } = prepare(payload);
 
   if (config.collect.enabled) {
     try {
@@ -226,6 +262,11 @@ async function startRun(payload) {
   pushLog('');
   pushLog(`=== run ${runId} ===`);
   pushLog(`mode ${job.mode}, count ${job.count}, seed ${job.seed}, ${clients.length} machine(s)`);
+  for (const spec of job.workflows) {
+    const machines = clients.filter((c) => job.assignments[c.name] === spec.id).map((c) => c.name);
+    if (machines.length) pushLog(`workflow '${spec.name}' -> ${machines.join(', ')}`);
+  }
+  if (unassigned?.length) pushLog(`skipping (no workflow assigned): ${unassigned.join(', ')}`);
   for (const line of applied) pushLog(`override: ${line}`);
 
   // Kick the actual work off in the background; the browser follows via SSE.
@@ -235,12 +276,11 @@ async function startRun(payload) {
       let usable = clients;
       if (payload.preflight !== false) {
         pushLog('preflight ...');
-        const uploads = assetNames(job);
-        const reports = await Promise.all(clients.map((c) => checkMachine(c, workflow, uploads)));
+        const reports = await checkAssigned(job, clients);
         const { ready } = summarize(reports);
         for (const report of reports) {
           if (report.ok) continue;
-          pushLog(`  ! skipping ${report.machine}:`);
+          pushLog(`  ! skipping ${report.machine} ('${report.workflow}'):`);
           if (report.error) pushLog(`      ${report.error}`);
           for (const cls of report.missingClasses) pushLog(`      custom node not installed: ${cls}`);
           for (const missing of report.missingValues) pushLog(`      ${describeMissingLine(missing)}`);
@@ -256,7 +296,6 @@ async function startRun(payload) {
       const runner = new Runner({
         fleet: config,
         job,
-        workflow,
         clients: usable,
         runId,
         log: pushLog,
