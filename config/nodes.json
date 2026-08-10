@@ -22,15 +22,6 @@
       "note": "RTX 4090"
     },
     {
-      "name": "Sadri PC",
-      "host": "192.168.90.163",
-      "port": 5555,
-      "scheme": "http",
-      "enabled": true,
-      "slots": 2,
-      "note": "RTX 4090"
-    },
-    {
       "name": "RmaN PC",
       "host": "192.168.90.26",
       "port": 5555,

@@ -14,7 +14,7 @@ import {
   COLLECT_DEFAULTS, ConfigError, emptyFleet, loadFleet, normalizeJob, resolveAssignments, saveFleet,
 } from './config.js';
 import { DEFAULT_PORTS, scan } from './discover.js';
-import { FLEET_PATH, JOBS_DIR, PUBLIC_DIR, UI_STATE_PATH, WORKFLOW_DIR } from './paths.js';
+import { APP_ROOT, FLEET_PATH, JOBS_DIR, PUBLIC_DIR, UI_STATE_PATH, WORKFLOW_DIR } from './paths.js';
 import { pick } from './picker.js';
 import { checkMachine, describeMissing, summarize } from './preflight.js';
 import { assetNames, Runner, safeName, writeManifest } from './runner.js';
@@ -32,6 +32,18 @@ const MIME = {
 };
 
 const LOG_LIMIT = 3000;
+
+let cachedVersion = null;
+function appVersion() {
+  if (cachedVersion === null) {
+    try {
+      cachedVersion = JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'package.json'), 'utf8')).version || '?';
+    } catch {
+      cachedVersion = '?';
+    }
+  }
+  return cachedVersion;
+}
 
 /* ------------------------------------------------------------ run state */
 
@@ -386,6 +398,7 @@ async function handleApi(req, res, url) {
       progress: run.progress,
       log: run.log.slice(-400),
       platform: process.platform,
+      version: appVersion(),
       paths: { fleet: FLEET_PATH, workflows: WORKFLOW_DIR, jobs: JOBS_DIR },
     });
   }
@@ -570,10 +583,12 @@ function serveStatic(req, res, url) {
       res.writeHead(404, { 'Content-Type': 'text/plain' }).end('not found');
       return;
     }
+    // no-store, not no-cache: this is served from the same machine, so there is nothing to
+    // gain from caching, and a stale index.html/app.js after an update is very confusing.
     res.writeHead(200, {
       'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
       'Content-Length': data.length,
-      'Cache-Control': 'no-cache',
+      'Cache-Control': 'no-store, must-revalidate',
     });
     res.end(data);
   });

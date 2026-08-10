@@ -1169,6 +1169,10 @@ async function boot() {
   if (data.configError) toast(data.configError, 'error');
 
   state.config = data.config;
+  if (data.version) {
+    const badge = $('#version');
+    if (badge) badge.textContent = `v${data.version}`;
+  }
   const ui = data.ui || {};
   state.assignments = ui.assignments || {};
 

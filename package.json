@@ -1,6 +1,6 @@
 {
   "name": "comfyfleet",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Run one ComfyUI workflow across every GPU machine on the LAN, from one browser tab.",
   "type": "module",
   "bin": {
