@@ -38,6 +38,15 @@
       "enabled": true,
       "slots": 2,
       "note": ""
+    },
+    {
+      "name": "Shayan PC",
+      "host": "192.168.90.117",
+      "port": 5555,
+      "scheme": "http",
+      "enabled": false,
+      "slots": 2,
+      "note": "RTX 4090"
     }
   ]
 }

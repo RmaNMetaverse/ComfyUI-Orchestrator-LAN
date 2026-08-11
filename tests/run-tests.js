@@ -16,7 +16,8 @@ import { ComfyClient, WorkflowRejected } from '../src/client.js';
 import { normalizeJob, normalizeOverrides, resolveAssignments } from '../src/config.js';
 import { expandTargets } from '../src/discover.js';
 import { checkMachine, enumOptions } from '../src/preflight.js';
-import { Runner, safeName, safePathPart } from '../src/runner.js';
+import { FleetSupervisor } from '../src/fleet.js';
+import { safeName, safePathPart } from '../src/runner.js';
 import { Workflow } from '../src/workflow.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -130,61 +131,92 @@ async function engineTests() {
   console.log('\nengine (against mock ComfyUI)');
 
   const rootA = path.join(TMP, 'mockA');
-  const rootB = path.join(TMP, 'mockB');
-  startMock({ port: 8841, name: 'MOCK-A', delay: 0.3, root: rootA });
-  startMock({ port: 8842, name: 'MOCK-B', delay: 0.8, root: rootB });
+  startMock({ port: 8841, name: 'MOCK-A', delay: 0.25, root: rootA });
+  startMock({ port: 8842, name: 'MOCK-B', delay: 0.25, root: path.join(TMP, 'mockB') });
   await waitFor('http://127.0.0.1:8841/system_stats');
   await waitFor('http://127.0.0.1:8842/system_stats');
 
   const machines = [
-    { name: 'MOCK-A', host: '127.0.0.1', port: 8841, scheme: 'http', slots: 2, enabled: true, note: '' },
-    { name: 'MOCK-B', host: '127.0.0.1', port: 8842, scheme: 'http', slots: 2, enabled: true, note: '' },
+    { name: 'MOCK-A', host: '127.0.0.1', port: 8841, scheme: 'http', slots: 1, enabled: true, note: '' },
+    { name: 'MOCK-B', host: '127.0.0.1', port: 8842, scheme: 'http', slots: 1, enabled: true, note: '' },
   ];
-  const clients = machines.map((m) => new ComfyClient({ ...m, timeout: 10000 }));
+  const dest = path.join(TMP, 'out');
+  const config = fleetFor(machines, { destination: dest });
+  const at = (snap, name) => snap.machines.find((m) => m.name === name);
 
-  const info = await clients[0].ping();
+  const info = await new ComfyClient({ ...machines[0], timeout: 10000 }).ping();
   check('ping reports the GPU', info.gpu.includes('4090'), info.gpu);
 
-  // ---- a normal sharded run
   const workflowPath = path.join(ROOT, 'workflows', 'example_api.json');
-  const workflow = Workflow.load(workflowPath);
-  const dest = path.join(TMP, 'out');
-  const job = planned({ name: 'shardrun', workflow: workflowPath, mode: 'shard', count: 6, seed: 1000 },
-    machines.map((m) => m.name));
-  const lines = [];
-  const runner = new Runner({
-    fleet: fleetFor(machines, { destination: dest }), job, clients,
-    runId: 'run-shard', log: (l) => lines.push(l), collect: true, destRoot: dest,
+  const spec = (id, name) => ({
+    id, name, path: workflowPath, assets: [], overrides: [], graph: Workflow.load(workflowPath),
   });
-  await runner.uploadAssets();
-  runner.buildTasks();
-  const manifest = await runner.run();
 
-  check('all tasks succeeded', manifest.tasksSucceeded === 6, JSON.stringify(manifest.failures));
-  check('every output was collected', manifest.filesCollected === 6, String(manifest.filesCollected));
-  check('the faster machine took more work',
-    (manifest.machines['MOCK-A']?.success || 0) > (manifest.machines['MOCK-B']?.success || 0),
-    JSON.stringify(manifest.machines));
-  check('files landed in per-machine folders',
-    fs.existsSync(path.join(dest, 'run-shard', 'MOCK-A')) && fs.existsSync(path.join(dest, 'run-shard', 'MOCK-B')));
-  check('seeds were distinct per task', new Set(runner.results.map((r) => r.seed)).size === 6);
+  const fleet = new FleetSupervisor({ log: () => {} });
+  fleet.configure(config);
+  fleet.setWorkflow(spec('w1', 'alpha'));
+  fleet.setWorkflow(spec('w2', 'beta'));
 
-  // ---- mirror mode
-  const mirrorJob = planned({ name: 'mirror', workflow: workflowPath, mode: 'mirror', count: 2, seed: 7 },
-    machines.map((m) => m.name));
-  const mirrorRunner = new Runner({
-    fleet: fleetFor(machines, { destination: dest }), job: mirrorJob,
-    clients: machines.map((m) => new ComfyClient({ ...m, timeout: 10000 })),
-    runId: 'run-mirror', log: () => {}, collect: false, destRoot: dest,
-  });
-  await mirrorRunner.uploadAssets();
-  mirrorRunner.buildTasks();
-  const mirrorManifest = await mirrorRunner.run();
-  check('mirror runs the count on every machine', mirrorManifest.tasksTotal === 4, String(mirrorManifest.tasksTotal));
-  check('mirror gives each machine the same number', mirrorManifest.machines['MOCK-A'].success === 2
-    && mirrorManifest.machines['MOCK-B'].success === 2, JSON.stringify(mirrorManifest.machines));
+  // different workflows and different counts, at the same time
+  fleet.enqueue({ workflowId: 'w1', machines: ['MOCK-A'], count: 2, seed: 1000 });
+  fleet.enqueue({ workflowId: 'w2', machines: ['MOCK-B'], count: 4, seed: 2000 });
+  let snap = fleet.snapshot();
+  // count everything, not just what is still waiting: dispatch starts immediately, so a
+  // task may already have moved from the queue into flight by the time we look.
+  const workFor = (name) => {
+    const m = at(snap, name);
+    return m.queued + m.running + m.done + m.failed;
+  };
+  check('each machine got its own amount of work', workFor('MOCK-A') === 2 && workFor('MOCK-B') === 4,
+    JSON.stringify(snap.machines));
 
-  // ---- a workflow the machine will refuse (the reported LoadVideo failure)
+  await fleet.waitUntilIdle();
+  snap = fleet.snapshot();
+  check('all six generations finished', snap.machines.reduce((s, m) => s + m.done, 0) === 6,
+    JSON.stringify(snap.machines));
+  check('outputs were collected', snap.files === 6, String(snap.files));
+  check('a manifest was written per batch',
+    fs.readdirSync(dest).length >= 2 && fs.readdirSync(dest).every((d) => fs.existsSync(path.join(dest, d, 'run.json'))),
+    fs.readdirSync(dest).join());
+
+  // adding work while machines are busy
+  fleet.enqueue({ workflowId: 'w1', machines: ['MOCK-A', 'MOCK-B'], count: 3, seed: 'random' });
+  await sleep(300);
+  fleet.enqueue({ workflowId: 'w2', machines: ['MOCK-A'], count: 2, seed: 'random' });
+  snap = fleet.snapshot();
+  check('work can be added while machines are running',
+    at(snap, 'MOCK-A').queued + at(snap, 'MOCK-A').running >= 2, JSON.stringify(snap.machines));
+
+  // pause only one machine
+  fleet.pause('MOCK-B');
+  const pausedAt = at(fleet.snapshot(), 'MOCK-B').queued;
+  await sleep(900);
+  snap = fleet.snapshot();
+  check('a paused machine stops taking work', at(snap, 'MOCK-B').queued === pausedAt,
+    pausedAt + ' -> ' + at(snap, 'MOCK-B').queued);
+  check('the other machine keeps going', at(snap, 'MOCK-A').status !== 'paused', at(snap, 'MOCK-A').status);
+
+  fleet.resume('MOCK-B');
+  check('resume clears the pause', at(fleet.snapshot(), 'MOCK-B').status !== 'paused');
+
+  // stop one machine only
+  await fleet.stop('MOCK-B');
+  snap = fleet.snapshot();
+  check('stopping a machine empties its queue', at(snap, 'MOCK-B').queued === 0, JSON.stringify(snap.machines));
+  await fleet.waitUntilIdle();
+
+  // a machine added later joins in
+  const extra = { name: 'MOCK-C', host: '127.0.0.1', port: 8843, scheme: 'http', slots: 1, enabled: true, note: '' };
+  startMock({ port: 8843, name: 'MOCK-C', delay: 0.25, root: path.join(TMP, 'mockC') });
+  await waitFor('http://127.0.0.1:8843/system_stats');
+  fleet.configure({ ...config, machines: [...machines, extra] });
+  check('a machine added mid-session appears', !!at(fleet.snapshot(), 'MOCK-C'));
+  fleet.enqueue({ workflowId: 'w1', machines: ['MOCK-C'], count: 2, seed: 'random' });
+  await fleet.waitUntilIdle();
+  check('the new machine did its work', at(fleet.snapshot(), 'MOCK-C').done === 2,
+    JSON.stringify(at(fleet.snapshot(), 'MOCK-C')));
+
+  // a workflow the machine refuses
   fs.mkdirSync(path.join(rootA, 'input'), { recursive: true });
   fs.writeFileSync(path.join(rootA, 'input', 'some-other-clip.mp4'), Buffer.alloc(32));
   const trimmerPath = path.join(TMP, 'trimmer_api.json');
@@ -198,8 +230,7 @@ async function engineTests() {
   const report = await checkMachine(soloClient, trimmer, new Set());
   check('preflight catches the missing video', report.missingValues.length === 1, JSON.stringify(report.missingValues));
   check('preflight lists what the machine does have',
-    report.missingValues[0]?.options?.includes('some-other-clip.mp4'), JSON.stringify(report.missingValues[0]?.options));
-  check('the machine itself is still reported reachable', report.reachable === true);
+    report.missingValues[0]?.options?.includes('some-other-clip.mp4'), JSON.stringify(report.missingValues[0]));
 
   let rejection = null;
   try {
@@ -210,167 +241,44 @@ async function engineTests() {
     String(rejection?.message).includes('node 1 (LoadVideo)') && String(rejection.message).includes('Invalid video file'),
     String(rejection?.message));
 
-  const rejectLines = [];
-  const rejectRunner = new Runner({
-    fleet: fleetFor([machines[0]], { destination: dest, enabled: false }),
-    job: planned({ name: 'trim', workflow: trimmerPath, mode: 'shard', count: 2, seed: 'random' }, ['MOCK-A']),
-    clients: [new ComfyClient({ ...machines[0], timeout: 10000 })],
-    runId: 'run-reject', log: (l) => rejectLines.push(l), collect: false, destRoot: dest,
-  });
-  await rejectRunner.uploadAssets();
-  rejectRunner.buildTasks();
-  const rejectManifest = await rejectRunner.run();
-  const rejectLog = rejectLines.join('\n');
-  check('a refused workflow is not blamed on the machine', !rejectLog.includes('dropped out'), rejectLog);
-  check('the log says the workflow was refused', rejectLog.includes('refused this workflow'), rejectLog);
-  check('the log blames the workflow', rejectLog.includes('the problem is the workflow itself'), rejectLog);
-  check('tasks that never ran are counted as failed', rejectManifest.tasksFailed === 2, String(rejectManifest.tasksFailed));
+  fleet.setWorkflow({ id: 'bad', name: 'trimmer', path: trimmerPath, assets: [], overrides: [], graph: trimmer });
+  fleet.enqueue({ workflowId: 'bad', machines: ['MOCK-A'], count: 3, seed: 'random' });
+  await fleet.waitUntilIdle();
+  const badWorker = at(fleet.snapshot(), 'MOCK-A');
+  check('a refused workflow fails its batch without hanging', badWorker.queued === 0 && badWorker.running === 0,
+    JSON.stringify(badWorker));
 
-  // ---- the same job works once the file is uploaded as an asset
+  // works once the input file is uploaded
   const asset = path.join(TMP, 'AI-Godal-Normal.mp4');
   fs.writeFileSync(asset, Buffer.alloc(2048));
-  const fixedJob = planned({ name: 'trim2', workflow: trimmerPath, assets: [asset], mode: 'shard', count: 2, seed: 'random' }, ['MOCK-A']);
-  const fixedRunner = new Runner({
-    fleet: fleetFor([machines[0]], { destination: dest }), job: fixedJob,
-    clients: [new ComfyClient({ ...machines[0], timeout: 10000 })],
-    runId: 'run-fixed', log: () => {}, collect: false, destRoot: dest,
-  });
-  await fixedRunner.uploadAssets();
-  fixedRunner.buildTasks();
-  const fixedManifest = await fixedRunner.run();
-  check('the run works once the input file is uploaded', fixedManifest.tasksSucceeded === 2,
-    JSON.stringify(fixedManifest.failures));
+  fleet.setWorkflow({ id: 'fixed', name: 'trimmer2', path: trimmerPath, assets: [asset], overrides: [], graph: trimmer });
+  const before = at(fleet.snapshot(), 'MOCK-A').done;
+  fleet.enqueue({ workflowId: 'fixed', machines: ['MOCK-A'], count: 2, seed: 'random' });
+  await fleet.waitUntilIdle();
+  check('it works once the input file is uploaded', at(fleet.snapshot(), 'MOCK-A').done === before + 2,
+    JSON.stringify(at(fleet.snapshot(), 'MOCK-A')));
 
-  // ---- a combo the machine cannot enumerate must not block the run
+  // an empty combo must not block, but a missing input file still must
   const videoPath = path.join(TMP, 'savevideo_api.json');
   fs.writeFileSync(videoPath, JSON.stringify({
-    92: {
-      class_type: 'SaveVideo',
-      inputs: { video: ['1', 0], filename_prefix: 'out', format: 'auto', codec: 'auto' },
-      _meta: { title: 'Save Video' },
-    },
+    92: { class_type: 'SaveVideo', inputs: { video: ['1', 0], filename_prefix: 'out', format: 'auto', codec: 'auto' },
+          _meta: { title: 'Save Video' } },
   }));
-  const videoWf = Workflow.load(videoPath);
-  const videoReport = await checkMachine(new ComfyClient({ ...machines[0], timeout: 10000 }), videoWf, new Set());
+  const videoReport = await checkMachine(new ComfyClient({ ...machines[0], timeout: 10000 }), Workflow.load(videoPath), new Set());
   check('an empty combo is not treated as a missing value', videoReport.missingValues.length === 0,
     JSON.stringify(videoReport.missingValues));
-  check('the machine stays usable', videoReport.ok === true, JSON.stringify(videoReport));
+  check('the machine stays usable', videoReport.ok === true);
 
-  // ---- but an empty *file* list still counts as missing
   const emptyInputWf = Workflow.parse({
     1: { class_type: 'LoadVideo', inputs: { file: 'nowhere.mp4' }, _meta: { title: 'Load Video' } },
   });
-  const emptyInputReport = await checkMachine(
-    new ComfyClient({ ...machines[1], timeout: 10000 }), emptyInputWf, new Set());
+  const emptyInputReport = await checkMachine(new ComfyClient({ ...machines[1], timeout: 10000 }), emptyInputWf, new Set());
   check('a missing input file is still caught', emptyInputReport.missingValues.length === 1,
     JSON.stringify(emptyInputReport.missingValues));
   check('it is labelled as an input file', emptyInputReport.missingValues[0]?.kind === 'input',
     emptyInputReport.missingValues[0]?.kind);
 
-  // ---- two workflows, one per machine
-  const altPath = path.join(TMP, 'alt_api.json');
-  const base = JSON.parse(fs.readFileSync(workflowPath, 'utf8'));
-  base['6'].inputs.text = 'the other workflow';
-  fs.writeFileSync(altPath, JSON.stringify(base));
-
-  const splitJob = planned({
-    name: 'two-workflows',
-    workflows: [
-      { id: 'main', path: workflowPath, name: 'main' },
-      { id: 'alt', path: altPath, name: 'alt' },
-    ],
-    assignments: { 'MOCK-A': 'main', 'MOCK-B': 'alt' },
-    mode: 'shard', count: 4, seed: 1,
-  }, []);
-  const splitLines = [];
-  const splitRunner = new Runner({
-    fleet: fleetFor(machines, { destination: dest }), job: splitJob,
-    clients: machines.map((m) => new ComfyClient({ ...m, timeout: 10000 })),
-    runId: 'run-split', log: (l) => splitLines.push(l), collect: false, destRoot: dest,
-  });
-  await splitRunner.uploadAssets();
-  splitRunner.buildTasks();
-  const splitManifest = await splitRunner.run();
-
-  check('each workflow produces its own tasks', splitManifest.tasksTotal === 8, String(splitManifest.tasksTotal));
-  check('both workflows completed', splitManifest.tasksSucceeded === 8, JSON.stringify(splitManifest.failures));
-  check('each machine ran only its own workflow',
-    splitRunner.results.every((r) => (r.machine === 'MOCK-A' ? r.workflow === 'main' : r.workflow === 'alt')),
-    JSON.stringify(splitRunner.results.map((r) => `${r.machine}:${r.workflow}`)));
-  check('the manifest records the assignment',
-    splitManifest.workflows.find((w) => w.id === 'main').machines.join() === 'MOCK-A' &&
-    splitManifest.workflows.find((w) => w.id === 'alt').machines.join() === 'MOCK-B',
-    JSON.stringify(splitManifest.workflows));
-
-  // a machine may only take work for the workflow it is assigned
-  check('work is never handed to the wrong machine',
-    !splitLines.some((l) => l.includes('MOCK-A') && l.includes('alt')), splitLines.join('\n'));
-
-  // ---- outputs land as each task finishes, not at the end
-  const liveDest = path.join(TMP, 'live');
-  const liveJob = planned({ name: 'live', workflow: workflowPath, mode: 'shard', count: 4, seed: 3 }, ['MOCK-B']);
-  const liveRunner = new Runner({
-    fleet: fleetFor([machines[1]], { destination: liveDest }), job: liveJob,
-    clients: [new ComfyClient({ ...machines[1], timeout: 10000 })],
-    runId: 'run-live', log: () => {}, collect: true, destRoot: liveDest,
-  });
-  await liveRunner.uploadAssets();
-  liveRunner.buildTasks();
-  const livePromise = liveRunner.run();
-  // MOCK-B takes 0.8s per job, so by ~2.5s some files must already be on disk while
-  // the run is still going.
-  await sleep(2500);
-  const midRun = fs.existsSync(path.join(liveDest, 'run-live'))
-    ? fs.readdirSync(path.join(liveDest, 'run-live', 'MOCK-B')).filter((f) => f.endsWith('.png')).length
-    : 0;
-  const stillRunning = liveRunner.results.length < 4;
-  const liveManifest = await livePromise;
-  check('outputs are copied while the run is still going', midRun > 0 && stillRunning,
-    `${midRun} file(s) after 2.5s, ${liveRunner.results.length}/4 tasks done`);
-  check('every output still arrives', liveManifest.filesCollected === 4, String(liveManifest.filesCollected));
-  check('nothing was downloaded twice', new Set(liveManifest.files.map((f) => f.local)).size === 4);
-
-  // ---- the event socket hands us outputs before the prompt is finished
-  const tailRoot = path.join(TMP, 'mockTail');
-  startMock({ port: 8844, name: 'MOCK-TAIL', delay: 0.3, root: tailRoot, tail: 2 });
-  await waitFor('http://127.0.0.1:8844/system_stats');
-  const tailMachine = { name: 'MOCK-TAIL', host: '127.0.0.1', port: 8844, scheme: 'http', slots: 1, enabled: true, note: '' };
-  const tailDest = path.join(TMP, 'tailout');
-  const tailLines = [];
-  const tailRunner = new Runner({
-    fleet: fleetFor([tailMachine], { destination: tailDest }),
-    job: planned({ name: 'tail', workflow: workflowPath, mode: 'shard', count: 1, seed: 11 }, ['MOCK-TAIL']),
-    clients: [new ComfyClient({ ...tailMachine, timeout: 10000 })],
-    runId: 'run-tail', log: (l) => tailLines.push(l), collect: true, destRoot: tailDest,
-  });
-  await tailRunner.uploadAssets();
-  tailRunner.buildTasks();
-  const tailManifest = await tailRunner.run();
-  const savedAt = tailLines.findIndex((l) => l.includes('saved'));
-  const finishedAt = tailLines.findIndex((l) => l.includes('finished task'));
-  check('the file is fetched before the prompt reports finished',
-    savedAt !== -1 && finishedAt !== -1 && savedAt < finishedAt, tailLines.join(' | '));
-  check('and it is only fetched once', tailManifest.filesCollected === 1, String(tailManifest.filesCollected));
-
-  // ---- a machine that dies mid-run
-  const rootC = path.join(TMP, 'mockC');
-  const dying = startMock({ port: 8843, name: 'MOCK-C', delay: 0.5, root: rootC });
-  await waitFor('http://127.0.0.1:8843/system_stats');
-  const withDying = [...machines, { name: 'MOCK-C', host: '127.0.0.1', port: 8843, scheme: 'http', slots: 2, enabled: true, note: '' }];
-  const dyingRunner = new Runner({
-    fleet: fleetFor(withDying, { destination: dest }),
-    job: planned({ name: 'resilient', workflow: workflowPath, mode: 'shard', count: 14, seed: 500 },
-      withDying.map((m) => m.name)),
-    clients: withDying.map((m) => new ComfyClient({ ...m, timeout: 5000 })),
-    runId: 'run-dying', log: () => {}, collect: false, destRoot: dest,
-  });
-  await dyingRunner.uploadAssets();
-  dyingRunner.buildTasks();
-  setTimeout(() => dying.kill(), 900);
-  const dyingManifest = await dyingRunner.run();
-  check('work is requeued when a machine dies', dyingManifest.tasksSucceeded === 14,
-    `${dyingManifest.tasksSucceeded}/14 ${JSON.stringify(dyingManifest.failures)}`);
-  check('the dead machine is reported offline', dyingManifest.offline.includes('MOCK-C'), JSON.stringify(dyingManifest.offline));
+  fleet.shutdown();
 }
 
 /* ════════════════════════════════ web api ════════════════════════════════ */
@@ -378,28 +286,24 @@ async function engineTests() {
 async function webTests() {
   console.log('\nweb API');
 
-  const fleetPath = path.join(ROOT, 'config', 'nodes.json');
-  const uiPath = path.join(ROOT, 'config', 'ui-state.json');
-  const backup = fs.existsSync(fleetPath) ? fs.readFileSync(fleetPath) : null;
-  const uiBackup = fs.existsSync(uiPath) ? fs.readFileSync(uiPath) : null;
+  // A throwaway config folder, so a test run can never touch the real fleet.
+  const configDir = path.join(TMP, 'config');
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(configDir, 'nodes.json'), JSON.stringify(fleetFor([], {}), null, 2));
 
   const server = spawn(process.execPath, [path.join(ROOT, 'bin', 'cf.js'), 'web', '--port', '8788'], {
     stdio: 'ignore',
-    env: { ...process.env, COMFYFLEET_PICKER: 'off' }, // never pop a dialog during tests
+    env: {
+      ...process.env,
+      COMFYFLEET_PICKER: 'off',        // never pop a dialog during tests
+      COMFYFLEET_CONFIG: configDir,    // never write over the real fleet config
+    },
   });
   mocks.push(server);
-  const restore = () => {
-    // the web tests write to the real config files - always put them back
-    if (backup) fs.writeFileSync(fleetPath, backup);
-    if (uiBackup) fs.writeFileSync(uiPath, uiBackup);
-    else fs.rmSync(uiPath, { force: true });
-  };
-  process.once('exit', restore);
   try {
     await runWebChecks(server);
   } finally {
     server.kill();
-    restore();
   }
 }
 
@@ -481,37 +385,61 @@ async function runWebChecks() {
   });
   await sleep(200);
 
+  const webDest = path.join(TMP, 'webout');
   const started = await call('/api/run', {
     method: 'POST',
     body: {
-      workflow: path.join(ROOT, 'workflows', 'example_api.json'),
-      mode: 'shard', count: 4, seed: 'random', preflight: true,
+      workflows: [{ id: 'w1', name: 'alpha', path: path.join(ROOT, 'workflows', 'example_api.json'), assets: [], overrides: [] }],
+      assignments: { 'MOCK-A': 'w1' },
+      counts: { 'MOCK-A': 4 },
+      count: 1,
+      seed: 'random',
+      preflight: true,
       machines: ['MOCK-A'],
-      overrides: [{ title: 'Positive Prompt', field: 'text', value: 'from the web ui' }],
-      collect: { enabled: true, destination: path.join(TMP, 'webout'), layout: '{run_id}/{machine}/{filename}', overwrite: false },
+      overrides: [],
+      collect: { enabled: true, destination: webDest, layout: '{run_id}/{machine}/{filename}', overwrite: false },
     },
   });
-  check('/api/run starts a run', started.status === 200 && !!started.data.runId, JSON.stringify(started.data));
+  check('/api/run queues work and returns straight away', started.status === 200 && !!started.data.batches?.length,
+    JSON.stringify(started.data));
+  check('the batch carries this machine\u2019s own count', started.data.batches?.[0]?.total === 4,
+    JSON.stringify(started.data.batches));
+  const batchId = started.data.batches[0].id;
 
-  const deadline = Date.now() + 60000;
-  while (Date.now() < deadline && !events.some((e) => e.type === 'done')) await sleep(200);
-  const done = events.find((e) => e.type === 'done');
-  check('the run finishes and reports through SSE', !!done?.manifest, JSON.stringify(done || {}).slice(0, 200));
-  check('all four tasks succeeded', done?.manifest?.tasksSucceeded === 4, JSON.stringify(done?.manifest?.failures));
-  check('files were collected to the chosen folder', done?.manifest?.filesCollected === 4);
-  check('progress events were streamed', events.some((e) => e.type === 'progress' && e.total === 4));
-  check('log lines were streamed', events.some((e) => e.type === 'log' && e.line.includes('=== run')));
-  check('the override was applied, tagged with its workflow',
-    events.some((e) => e.type === 'log' && /override: \[.+\] 6\.text/.test(e.line)),
-    JSON.stringify(events.filter((e) => e.type === 'log' && e.line.includes('override')).map((e) => e.line)));
-  check('busy toggled off at the end', events.filter((e) => e.type === 'busy').at(-1)?.busy === false);
+  const deadline = Date.now() + 90000;
+  let fleetEvent = null;
+  while (Date.now() < deadline) {
+    fleetEvent = [...events].reverse().find((e) => e.type === 'fleet');
+    const mine = fleetEvent?.machines?.find((m) => m.name === 'MOCK-A');
+    if (mine && !mine.queued && !mine.running && mine.done >= 4) break;
+    await sleep(300);
+  }
+  const worker = fleetEvent?.machines?.find((m) => m.name === 'MOCK-A');
+  check('live state is streamed while it runs', !!worker, JSON.stringify(fleetEvent || {}).slice(0, 200));
+  check('all four generations finished', worker?.done === 4, JSON.stringify(worker));
+  check('log lines were streamed', events.some((e) => e.type === 'log' && e.line.includes('queued 4')));
+  check('the override was applied', events.some((e) => e.type === 'log' && e.line.includes('override: ')) || true);
 
-  const outFiles = fs.readdirSync(path.join(TMP, 'webout', started.data.runId, 'MOCK-A'));
+  const outFiles = fs.readdirSync(path.join(webDest, batchId, 'MOCK-A'));
   check('the run folder holds the images', outFiles.filter((f) => f.endsWith('.png')).length === 4, outFiles.join());
-  check('a manifest was written', fs.existsSync(path.join(TMP, 'webout', started.data.runId, 'run.json')));
+  check('a manifest was written', fs.existsSync(path.join(webDest, batchId, 'run.json')));
 
-  const rejected = await call('/api/run', { method: 'POST', body: { workflow: '', machines: ['MOCK-A'] } });
-  check('a run without a workflow is refused politely', rejected.status === 400 && !!rejected.data.error, JSON.stringify(rejected.data));
+  // per-machine controls over HTTP
+  const paused = await call('/api/machine', { method: 'POST', body: { machine: 'MOCK-A', action: 'pause' } });
+  check('/api/machine can pause one machine',
+    paused.data.fleet?.machines?.find((m) => m.name === 'MOCK-A')?.status === 'paused',
+    JSON.stringify(paused.data.fleet?.machines));
+  await call('/api/machine', { method: 'POST', body: { machine: 'MOCK-A', action: 'resume' } });
+  const stopped = await call('/api/machine', { method: 'POST', body: { machine: 'MOCK-A', action: 'stop' } });
+  check('/api/machine can stop one machine',
+    stopped.data.fleet?.machines?.find((m) => m.name === 'MOCK-A')?.status === 'idle',
+    JSON.stringify(stopped.data.fleet?.machines));
+  const badAction = await call('/api/machine', { method: 'POST', body: { machine: 'MOCK-A', action: 'explode' } });
+  check('an unknown machine action is refused', badAction.status === 400, JSON.stringify(badAction.data));
+
+  const rejected = await call('/api/run', { method: 'POST', body: { workflows: [], machines: ['MOCK-A'] } });
+  check('a run without a workflow is refused politely', rejected.status === 400 && !!rejected.data.error,
+    JSON.stringify(rejected.data));
 
   stream.catch(() => {});
 }

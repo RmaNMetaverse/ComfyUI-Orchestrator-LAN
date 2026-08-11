@@ -14,10 +14,11 @@ import {
   COLLECT_DEFAULTS, ConfigError, emptyFleet, loadFleet, normalizeJob, resolveAssignments, saveFleet,
 } from './config.js';
 import { DEFAULT_PORTS, scan } from './discover.js';
+import { FleetSupervisor } from './fleet.js';
 import { APP_ROOT, FLEET_PATH, JOBS_DIR, PUBLIC_DIR, UI_STATE_PATH, WORKFLOW_DIR } from './paths.js';
 import { pick } from './picker.js';
 import { checkMachine, describeMissing, summarize } from './preflight.js';
-import { assetNames, Runner, safeName, writeManifest } from './runner.js';
+import { assetNames, safeName } from './runner.js';
 import { Workflow, WorkflowError } from './workflow.js';
 
 const MIME = {
@@ -58,6 +59,20 @@ const run = {
 };
 
 const listeners = new Set();
+
+/**
+ * One supervisor for the whole server. It owns the machines and their queues, so work
+ * carries on between requests and several machines can be busy with different things.
+ */
+const fleet = new FleetSupervisor({
+  log: (line) => pushLog(line),
+  onChange: (snapshot) => broadcast({ type: 'fleet', ...snapshot }),
+});
+try {
+  fleet.configure(loadFleet());
+} catch {
+  /* a broken config is reported through /api/state instead */
+}
 
 function broadcast(event) {
   const payload = `data: ${JSON.stringify(event)}\n\n`;
@@ -250,8 +265,13 @@ function hintsFor(reports) {
 
 const describeMissingLine = describeMissing;
 
-async function startRun(payload) {
-  const { config, job, clients, applied, unassigned } = prepare(payload);
+/**
+ * Register the workflows the browser sent and queue work on the chosen machines.
+ * Returns immediately: the supervisor keeps running in the background, and other
+ * machines carry on with whatever they were already doing.
+ */
+async function startWork(payload) {
+  const { config, job, clients, applied } = prepare(payload);
 
   if (config.collect.enabled) {
     try {
@@ -264,114 +284,50 @@ async function startRun(payload) {
     }
   }
 
-  const runId = `${timestamp()}-${safeName(job.name)}`;
-  run.runId = runId;
-  run.busy = true;
-  run.kind = 'run';
-  run.manifest = null;
-  broadcast({ type: 'busy', busy: true, kind: 'run', runId });
-
-  pushLog('');
-  pushLog(`=== run ${runId} ===`);
-  pushLog(`mode ${job.mode}, count ${job.count}, seed ${job.seed}, ${clients.length} machine(s)`);
-  for (const spec of job.workflows) {
-    const machines = clients.filter((c) => job.assignments[c.name] === spec.id).map((c) => c.name);
-    if (machines.length) pushLog(`workflow '${spec.name}' -> ${machines.join(', ')}`);
-  }
-  if (unassigned?.length) pushLog(`skipping (no workflow assigned): ${unassigned.join(', ')}`);
+  fleet.configure(config);
+  for (const spec of job.workflows) fleet.setWorkflow(spec);
   for (const line of applied) pushLog(`override: ${line}`);
 
-  // Kick the actual work off in the background; the browser follows via SSE.
-  (async () => {
-    let ticker = null;
-    try {
-      let usable = clients;
-      if (payload.preflight !== false) {
-        pushLog('preflight ...');
-        const reports = await checkAssigned(job, clients);
-        const { ready } = summarize(reports);
-        for (const report of reports) {
-          if (report.ok) continue;
-          pushLog(`  ! skipping ${report.machine} ('${report.workflow}'):`);
-          if (report.error) pushLog(`      ${report.error}`);
-          for (const cls of report.missingClasses) pushLog(`      custom node not installed: ${cls}`);
-          for (const missing of report.missingValues) pushLog(`      ${describeMissingLine(missing)}`);
-        }
-        usable = clients.filter((c) => ready.includes(c.name));
-        if (!usable.length) {
-          pushLog('no usable machines - nothing to run');
-          for (const hint of hintsFor(reports)) pushLog(`hint: ${hint}`);
-          return;
-        }
-      }
-
-      const runner = new Runner({
-        fleet: config,
-        job,
-        clients: usable,
-        runId,
-        log: pushLog,
-        collect: config.collect.enabled,
-        destRoot: config.collect.destination,
-      });
-      run.runner = runner;
-
-      ticker = setInterval(() => {
-        run.progress = runner.progress();
-        broadcast({ type: 'progress', ...run.progress });
-      }, 500);
-
-      await runner.uploadAssets();
-      runner.buildTasks();
-      const manifest = await runner.run();
-      run.manifest = manifest;
-
-      pushLog('');
-      pushLog(
-        `Done in ${manifest.elapsedSeconds}s - ${manifest.tasksSucceeded}/${manifest.tasksTotal} ok, ` +
-          `${manifest.tasksFailed} failed, ${manifest.filesCollected} file(s) collected`,
-      );
-      for (const [machine, stats] of Object.entries(manifest.machines).sort()) {
-        const attempts = Math.max(1, stats.success + stats.failed);
-        pushLog(
-          `  ${machine}: ${stats.success} ok, ${stats.failed} failed, ` +
-            `avg ${(stats.seconds / attempts).toFixed(0)}s per task`,
-        );
-      }
-      for (const failure of manifest.failures) {
-        pushLog(`  ! task ${failure.task} on ${failure.machine}: ${failure.detail}`);
-      }
-      for (const err of manifest.collectErrors) pushLog(`  ! download failed: ${err}`);
-
-      if (config.collect.enabled) {
-        const file = writeManifest(manifest, config.collect.destination, runId);
-        pushLog(`outputs: ${path.join(config.collect.destination, runId)}`);
-        if (!file) pushLog('  ! could not write run.json - is the output location writable?');
-      }
-      broadcast({ type: 'done', manifest });
-    } catch (err) {
-      pushLog(`run failed: ${err.message}`);
-      broadcast({ type: 'done', manifest: null, error: err.message });
-    } finally {
-      if (ticker) clearInterval(ticker);
-      if (run.runner) {
-        run.progress = run.runner.progress();
-        broadcast({ type: 'progress', ...run.progress });
-      }
-      run.runner = null;
-      run.busy = false;
-      run.kind = null;
-      broadcast({ type: 'busy', busy: false });
+  if (payload.preflight !== false) {
+    const reports = await checkAssigned(job, clients);
+    const { ready } = summarize(reports);
+    for (const report of reports) {
+      if (report.ok) continue;
+      pushLog(`  ! skipping ${report.machine} ('${report.workflow}'):`);
+      if (report.error) pushLog(`      ${report.error}`);
+      for (const cls of report.missingClasses) pushLog(`      custom node not installed: ${cls}`);
+      for (const missing of report.missingValues) pushLog(`      ${describeMissing(missing)}`);
     }
-  })();
+    if (!ready.length) {
+      pushLog('nothing started - no machine passed the check');
+      for (const hint of hintsFor(reports)) pushLog(`hint: ${hint}`);
+      throw new ConfigError('No machine passed the check. See the log for what is missing.');
+    }
+    clients.splice(0, clients.length, ...clients.filter((c) => ready.includes(c.name)));
+  }
 
-  return { runId };
-}
-
-function timestamp() {
-  const d = new Date();
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  // One batch per workflow, carrying each machine's own generation count.
+  const batches = [];
+  const byWorkflow = new Map();
+  for (const client of clients) {
+    const id = job.assignments[client.name];
+    if (!id) continue;
+    if (!byWorkflow.has(id)) byWorkflow.set(id, []);
+    byWorkflow.get(id).push(client.name);
+  }
+  for (const [workflowId, machines] of byWorkflow) {
+    // machines can each ask for a different number of generations
+    const groups = new Map();
+    for (const machine of machines) {
+      const count = Math.max(1, Number(payload.counts?.[machine]) || job.count);
+      if (!groups.has(count)) groups.set(count, []);
+      groups.get(count).push(machine);
+    }
+    for (const [count, group] of groups) {
+      batches.push(fleet.enqueue({ workflowId, machines: group, count, seed: job.seed }));
+    }
+  }
+  return { batches: batches.map((b) => ({ id: b.id, total: b.total, machines: b.machines })) };
 }
 
 /* ---------------------------------------------------------------- routes */
@@ -384,6 +340,9 @@ async function handleApi(req, res, url) {
     let configError = null;
     try {
       config = loadFleet();
+      // If the config was broken when the server started (or was fixed on disk since),
+      // pick it up now rather than staying empty until someone presses Save.
+      if (!fleet.workers.size && config.machines.length) fleet.configure(config);
     } catch (err) {
       config = emptyFleet();
       configError = err.message;
@@ -392,10 +351,9 @@ async function handleApi(req, res, url) {
       config,
       ui: readUiState(),
       configError,
+      fleet: fleet.snapshot(),
       busy: run.busy,
       kind: run.kind,
-      runId: run.runId,
-      progress: run.progress,
       log: run.log.slice(-400),
       platform: process.platform,
       version: appVersion(),
@@ -406,7 +364,8 @@ async function handleApi(req, res, url) {
   if (route === '/api/fleet' && req.method === 'PUT') {
     const body = await readBody(req);
     const saved = saveFleet(body);
-    return sendJson(res, 200, { config: saved });
+    fleet.configure(saved); // machines added or removed take effect straight away
+    return sendJson(res, 200, { config: saved, fleet: fleet.snapshot() });
   }
 
   if (route === '/api/ui' && req.method === 'PUT') {
@@ -467,24 +426,31 @@ async function handleApi(req, res, url) {
   }
 
   if (route === '/api/check' && req.method === 'POST') {
-    if (run.busy) return sendJson(res, 409, { error: 'Something is already running.' });
     const body = await readBody(req);
     const reports = await startCheck(body);
     return sendJson(res, 200, { reports });
   }
 
   if (route === '/api/run' && req.method === 'POST') {
-    if (run.busy) return sendJson(res, 409, { error: 'A run is already going.' });
     const body = await readBody(req);
-    const started = await startRun(body);
-    return sendJson(res, 200, started);
+    return sendJson(res, 200, await startWork(body));
+  }
+
+  if (route === '/api/machine' && req.method === 'POST') {
+    const body = await readBody(req);
+    const { machine, action } = body;
+    if (!machine || !action) return sendJson(res, 400, { error: 'machine and action are required' });
+    if (action === 'pause') fleet.pause(machine);
+    else if (action === 'resume') fleet.resume(machine);
+    else if (action === 'stop') await fleet.stop(machine);
+    else return sendJson(res, 400, { error: `unknown action "${action}"` });
+    return sendJson(res, 200, { ok: true, fleet: fleet.snapshot() });
   }
 
   if (route === '/api/cancel' && req.method === 'POST') {
-    if (!run.runner) return sendJson(res, 200, { ok: true, note: 'nothing running' });
-    pushLog('stopping - clearing the queue on every machine ...');
-    await run.runner.abort();
-    return sendJson(res, 200, { ok: true });
+    pushLog('stopping every machine ...');
+    await fleet.stopAll();
+    return sendJson(res, 200, { ok: true, fleet: fleet.snapshot() });
   }
 
   if (route === '/api/free' && req.method === 'POST') {

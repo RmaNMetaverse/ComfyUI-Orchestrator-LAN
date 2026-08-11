@@ -17,12 +17,16 @@ installs alike. Nothing has to be installed on the GPU machines themselves.
 
 ## The interface
 
-Three tabs, then **Run on fleet**. Everything is saved, so it comes back the way you left it.
+Three tabs. Everything is saved, so it comes back the way you left it.
 
 **1. Machines** — add each ComfyUI box by IP address and port, or press *Find on network* to
-scan the subnet and pick from whatever answers. The switch on each row decides who takes part.
-*Refresh status* shows each machine's GPU, free VRAM, queue depth and ComfyUI version. During a
-run the same rows show live state: running, idle, dropped or refused.
+scan the subnet and pick from whatever answers. Each row carries that machine's own settings and
+controls: which **workflow** it runs, how many **generations** to do, and **Start / Pause /
+Resume / Stop** for that machine alone. The rows show live state while work is going — rendering,
+queued, paused, not answering — plus a running tally of done, failed and files collected.
+
+Machines work independently. Starting one does not touch the others, and you can add machines,
+add workflows and start more work while a render is already in progress.
 
 **2. Workflow** — hold **as many workflows as you like**. Drop the exported `.json` files onto
 the page, or press *Add workflow* to open the normal Windows file dialog. Each one keeps its own
@@ -40,8 +44,9 @@ chosen, every machine runs it.
 `\\FILESERVER\ComfyOutputs`, or any folder on this computer. *Save as job file* writes the whole
 setup out so a script or scheduled task can run it later with `cf run <file>`.
 
-The dock at the bottom stays put: Check machines, Run on fleet, Stop, a progress bar, a chip per
-machine, and a live log streamed from the server over server-sent events.
+The dock at the bottom stays put: *Check machines*, *Start all machines* (which honours each
+machine's own count), *Stop everything*, a progress bar covering the whole fleet, a chip per busy
+machine, and a live log streamed from the server.
 
 Light and dark follow the system by default; the button in the header cycles auto → light → dark.
 
@@ -54,10 +59,9 @@ Light and dark follow the system by default; the button in the header cycles aut
 - Sends the exact same workflow graph (all nodes, wiring, widget values) to every machine.
 - Uploads input assets (reference images, video, audio, masks) into each machine's `input/` folder.
 - Overrides prompts and any other widget value per run, without editing the JSON.
-- **Split** mode: spreads N generations across the fleet with a distinct seed each. Work is handed
-  out as machines free up, so a 4090 naturally takes more of it than a slower card.
-- **Mirror** mode: every machine runs the identical workflow with identical seeds — for checking
-  the fleet really is in sync.
+- Gives every machine its own workflow, its own input files and its own number of generations.
+- Runs machines independently: start, pause, resume or stop any one of them without disturbing
+  the rest, and queue more work onto a machine that is already busy.
 - Downloads every produced file (images, videos, audio — anything a save node emits) **the
   moment the machine writes it**, not at the end of the run: ComfyFleet listens on each
   machine's event socket, so a file is on the share while the rest of the graph is still
@@ -241,6 +245,8 @@ npm test
 | `this machine's ComfyUI does not offer 'x' for node N …` | That build genuinely lacks the option — usually an older/newer ComfyUI or a different custom node version. To run regardless, switch off *Check machines before running* on the Output tab |
 | The file dialog does not appear | It opens on the machine running ComfyFleet. Driving the interface from another computer? Start the server with `COMFYFLEET_PICKER=off` and type paths instead |
 | Outputs are not appearing | The machine running ComfyFleet needs write access to the destination; check `collectErrors` in `run.json` |
+| `still running after N minutes - giving up on it` | The stall timeout counts only time spent *executing*, so queued work is never written off. Raise `fleet.stallTimeout` in `config/nodes.json` for very long videos |
+| A change to the interface did not appear | Reload the page. Changes under `src/` need the server restarted (`npm start`); files under `public/` only need a reload |
 | One machine is much slower | Normal with mixed GPUs — split mode already compensates. Raise its `slots` if it sits idle |
 | `still running after N minutes - giving up on it` | The job really did run that long. Raise `fleet.stallTimeout` in `config/nodes.json` (milliseconds, 60 min by default) for slow video work. Time spent waiting in the queue does **not** count towards it |
 | `the machine no longer knows about this job` | ComfyUI restarted, or its queue was cleared, while the job was in flight. The task is requeued to another machine when one is free |

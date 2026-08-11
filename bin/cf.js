@@ -8,7 +8,8 @@ import { clientFor } from '../src/client.js';
 import { ConfigError, enabledMachines, loadFleet, loadJob } from '../src/config.js';
 import { DEFAULT_PORTS, scan } from '../src/discover.js';
 import { checkMachine, formatReport, summarize } from '../src/preflight.js';
-import { assetNames, Runner, safeName, writeManifest } from '../src/runner.js';
+import { FleetSupervisor } from '../src/fleet.js';
+import { assetNames } from '../src/runner.js';
 import { startWeb } from '../src/server.js';
 import { Workflow, WorkflowError } from '../src/workflow.js';
 
@@ -227,41 +228,63 @@ async function cmdRun(args) {
   }
 
   if (args.flags['dry-run']) {
-    const per = job.mode === 'mirror' ? job.count : job.count / Math.max(1, list.length);
-    log('\nDry run - would dispatch:');
-    log(`  ${job.count} task(s) in ${job.mode} mode over ${list.length} machine(s) (~${per.toFixed(1)} each)`);
-    log(collect ? `  collect -> ${path.join(destRoot, runId)}` : '  collection disabled');
+    log('\nDry run - would queue:');
+    for (const client of list) {
+      const spec = job.workflows.find((w) => w.id === job.assignments[client.name]);
+      log(`  ${client.name}: ${job.count} x '${spec.name}'`);
+    }
+    log(collect ? `  collect -> ${destRoot}` : '  collection disabled');
     return 0;
   }
 
-  const runner = new Runner({ fleet: config, job, clients: list, runId, log, collect, destRoot });
+  // The same supervisor the web interface uses, driven to completion.
+  const fleet = new FleetSupervisor({ log });
+  fleet.configure({
+    ...config,
+    collect: { ...config.collect, enabled: collect, destination: destRoot },
+    machines: config.machines.filter((m) => list.some((c) => c.name === m.name)),
+  });
+  for (const spec of job.workflows) fleet.setWorkflow(spec);
+
   const stop = () => {
-    log('\ninterrupted - clearing the queue on every machine ...');
-    runner.abort().finally(() => process.exit(130));
+    log('\ninterrupted - stopping every machine ...');
+    fleet.stopAll().finally(() => process.exit(130));
   };
   process.on('SIGINT', stop);
 
   log('');
-  await runner.uploadAssets();
-  runner.buildTasks();
-  const manifest = await runner.run();
+  const byWorkflow = new Map();
+  for (const client of list) {
+    const id = job.assignments[client.name];
+    if (!byWorkflow.has(id)) byWorkflow.set(id, []);
+    byWorkflow.get(id).push(client.name);
+  }
+  const batches = [];
+  for (const [workflowId, machines] of byWorkflow) {
+    batches.push(fleet.enqueue({ workflowId, machines, count: job.count, seed: job.seed }));
+  }
+
+  await fleet.waitUntilIdle();
+  fleet.shutdown();
+
+  const done = batches.reduce((s, b) => s + b.done, 0);
+  const failed = batches.reduce((s, b) => s + b.failed, 0);
+  const total = batches.reduce((s, b) => s + b.total, 0);
+  const snapshot = fleet.snapshot();
 
   log('');
-  log(`Done in ${manifest.elapsedSeconds}s  -  ${manifest.tasksSucceeded}/${manifest.tasksTotal} tasks ok, ${manifest.tasksFailed} failed, ${manifest.filesCollected} file(s) collected`);
-  for (const [machine, stats] of Object.entries(manifest.machines).sort()) {
-    const attempts = Math.max(1, stats.success + stats.failed);
-    log(`  ${machine.padEnd(14)} ${stats.success} ok  ${stats.failed} failed  avg ${(stats.seconds / attempts).toFixed(0)}s/task`);
+  log(`Done  -  ${done}/${total} ok, ${failed} failed, ${snapshot.files} file(s) collected`);
+  for (const machine of snapshot.machines) {
+    if (machine.done || machine.failed) {
+      log(`  ${machine.name.padEnd(14)} ${machine.done} ok  ${machine.failed} failed  ${machine.files} file(s)`);
+    }
   }
-  for (const failure of manifest.failures) log(`  ! task ${failure.task} on ${failure.machine}: ${failure.detail}`);
-  for (const err of manifest.collectErrors) log(`  ! download failed: ${err}`);
-
-  if (collect) {
-    const file = writeManifest(manifest, destRoot, runId);
-    log(`\nOutputs: ${path.join(destRoot, runId)}`);
-    log(file ? `Manifest: ${file}` : '! could not write run.json (is the output location writable?)');
+  for (const err of fleet.collectErrors) log(`  ! download failed: ${err}`);
+  if (collect) log(`\nOutputs: ${destRoot}`);
+  if (args.flags.json) {
+    fs.writeFileSync(args.flags.json, `${JSON.stringify({ batches: batches.map((b) => ({ id: b.id, total: b.total, done: b.done, failed: b.failed })), files: fleet.collected }, null, 2)}\n`, 'utf8');
   }
-  if (args.flags.json) fs.writeFileSync(args.flags.json, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
-  return manifest.tasksFailed ? 3 : 0;
+  return failed ? 3 : 0;
 }
 
 async function cmdCancel(args) {

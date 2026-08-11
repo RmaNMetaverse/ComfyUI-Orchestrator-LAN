@@ -10,9 +10,11 @@ const state = {
   workflows: [],
   selected: null, // id of the workflow whose files/overrides/nodes are shown
   assignments: {}, // machine name -> workflow id
-  busy: false,
+  counts: {},      // machine name -> generations (blank = use the default below)
+  defaultCount: 10,
+  fleet: null,     // live worker state pushed from the server
+  busy: false,     // a machine check is running
   kind: null,
-  progress: null,
   expandedNodes: new Set(),
 };
 
@@ -125,14 +127,17 @@ window.addEventListener('resize', () => $$('.segmented').forEach(moveThumb));
 
 function machineCard(machine, index) {
   const info = state.status.get(machine.name);
-  const live = state.progress?.machines?.find((m) => m.name === machine.name);
+  const live = state.fleet?.machines?.find((m) => m.name === machine.name);
+  const count = state.counts[machine.name] ?? '';
 
+  // Live worker state wins over the last ping, because it is what the machine is doing now.
   let pill = '<span class="pill">not checked</span>';
-  if (live && state.busy) {
-    if (live.state === 'offline') pill = '<span class="pill pill-red"><span class="dot bg-ios-red"></span>dropped</span>';
-    else if (live.state === 'refused') pill = '<span class="pill pill-orange">refused workflow</span>';
-    else if (live.busy) pill = `<span class="pill pill-blue"><span class="dot bg-ios-blue dot-pulse"></span>running ${live.busy}</span>`;
-    else pill = '<span class="pill pill-green"><span class="dot bg-ios-green"></span>idle</span>';
+  if (live && live.status === 'running') {
+    pill = `<span class="pill pill-blue"><span class="dot bg-ios-blue dot-pulse"></span>rendering ${live.running}</span>`;
+  } else if (live && live.status === 'paused') {
+    pill = '<span class="pill pill-orange">paused</span>';
+  } else if (live && live.status === 'offline') {
+    pill = '<span class="pill pill-red"><span class="dot bg-ios-red"></span>not answering</span>';
   } else if (info) {
     pill = info.online
       ? '<span class="pill pill-green"><span class="dot bg-ios-green"></span>online</span>'
@@ -140,31 +145,51 @@ function machineCard(machine, index) {
   }
 
   const detail = info?.online
-    ? `${esc(info.gpu)} · ${info.vramFreeGb} GB free · queue ${info.queue} · ComfyUI ${esc(info.comfyuiVersion)}`
+    ? `${esc(info.gpu)} · ${info.vramFreeGb} GB free · ComfyUI ${esc(info.comfyuiVersion)}`
     : info?.error
       ? esc(info.error)
       : machine.note
         ? esc(machine.note)
         : 'Press “Refresh status” to see this machine’s GPU';
 
+  const busy = live && (live.queued || live.running);
+  const tally = live && (live.done || live.failed || live.cancelled || live.queued || live.running)
+    ? `<span class="pill">${live.done} done${live.failed ? ` · ${live.failed} failed` : ''}` +
+      `${live.cancelled ? ` · ${live.cancelled} cancelled` : ''}` +
+      `${live.queued ? ` · ${live.queued} queued` : ''}${live.files ? ` · ${live.files} files` : ''}</span>`
+    : '';
+
+  const controls = `
+    <button class="btn-tiny" data-start="${esc(machine.name)}" title="Start this machine only">Start</button>
+    ${live?.status === 'paused'
+      ? `<button class="btn-tiny" data-resume="${esc(machine.name)}">Resume</button>`
+      : `<button class="btn-tiny" data-pause="${esc(machine.name)}" ${busy ? '' : 'disabled'}>Pause</button>`}
+    <button class="btn-tiny danger" data-stop="${esc(machine.name)}" ${busy ? '' : 'disabled'}>Stop</button>`;
+
   return `
     <div class="card">
-      <div class="flex items-center gap-3 p-4">
+      <div class="flex flex-wrap items-center gap-3 p-4">
         <input type="checkbox" class="ios-switch small" data-toggle="${index}" ${machine.enabled ? 'checked' : ''}
-               title="Include this machine in runs" />
+               title="Include this machine when starting everything" />
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-center gap-2">
             <span class="text-[14px] font-semibold">${esc(machine.name)}</span>
             <span class="font-mono text-[12px] text-ios-gray">${esc(machine.host)}:${machine.port}</span>
-            ${pill}
+            ${pill}${tally}
           </div>
-          <p class="mt-0.5 truncate text-[12px] text-ios-gray">${detail}</p>
+          <p class="mt-0.5 truncate text-[12px] text-ios-gray">${live?.note ? esc(live.note) : detail}</p>
         </div>
         <div class="flex items-center gap-1.5">
           ${assignPicker(machine)}
+          <input type="number" min="1" class="field !py-1.5 !text-[12px] w-20" data-count-for="${esc(machine.name)}"
+                 value="${esc(count)}" placeholder="${state.defaultCount}" title="Generations for this machine" />
           <button class="btn-tiny" data-edit="${index}">Edit</button>
           <button class="btn-tiny danger" data-remove="${index}">Remove</button>
         </div>
+      </div>
+      <div class="flex flex-wrap items-center gap-1.5 border-t border-black/6 dark:border-white/8 px-4 py-2">
+        ${controls}
+        ${live && live.status !== 'idle' ? `<span class="ml-auto text-[11px] text-ios-gray">${esc(live.status)}</span>` : ''}
       </div>
     </div>`;
 }
@@ -179,7 +204,7 @@ function assignPicker(machine) {
       (w) => `<option value="${esc(w.id)}"${w.id === current ? ' selected' : ''}>${esc(w.name)}</option>`,
     ),
   ].join('');
-  return `<select class="field !py-1.5 !text-[12px] max-w-[13rem]" data-assign="${esc(machine.name)}"
+  return `<select class="field !py-1.5 !text-[12px] max-w-[12rem]" data-assign="${esc(machine.name)}"
                   title="Workflow this machine runs">${options}</select>`;
 }
 
@@ -215,7 +240,21 @@ function renderMachines() {
   $('span.size-1\\.5', summary)?.classList.toggle('bg-ios-green', online > 0);
 }
 
-$('#machine-list').addEventListener('click', (event) => {
+$('#machine-list').addEventListener('click', async (event) => {
+  // per-machine controls: each one acts on that machine alone
+  const start = event.target.closest('[data-start]');
+  const pause = event.target.closest('[data-pause]');
+  const resume = event.target.closest('[data-resume]');
+  const stopIt = event.target.closest('[data-stop]');
+  try {
+    if (start) return await startWork([start.dataset.start]);
+    if (pause) return await machineAction(pause.dataset.pause, 'pause');
+    if (resume) return await machineAction(resume.dataset.resume, 'resume');
+    if (stopIt) return await machineAction(stopIt.dataset.stop, 'stop');
+  } catch (err) {
+    return toast(err.message, 'error');
+  }
+
   const edit = event.target.closest('[data-edit]');
   const remove = event.target.closest('[data-remove]');
   if (edit) return machineDialog(Number(edit.dataset.edit));
@@ -230,7 +269,21 @@ $('#machine-list').addEventListener('click', (event) => {
   }
 });
 
+async function machineAction(machine, action) {
+  const data = await api('/api/machine', { method: 'POST', body: { machine, action } });
+  if (data.fleet) applyFleet(data.fleet);
+}
+
 $('#machine-list').addEventListener('change', (event) => {
+  const count = event.target.closest('[data-count-for]');
+  if (count) {
+    const machine = count.dataset.countFor;
+    const value = Math.floor(Number(count.value));
+    if (value >= 1) state.counts[machine] = value;
+    else delete state.counts[machine];
+    saveUi();
+    return;
+  }
   const assign = event.target.closest('[data-assign]');
   if (assign) {
     const machine = assign.dataset.assign;
@@ -878,20 +931,28 @@ function discoverDialog() {
 
 /* ──────────────────────────────── run bar ───────────────────────────────── */
 
-function jobPayload() {
+/**
+ * @param only  machine names to start; empty means every enabled machine that has a workflow
+ */
+function jobPayload(only = null) {
+  const machines = (only && only.length
+    ? state.config.machines.filter((m) => only.includes(m.name))
+    : state.config.machines.filter((m) => m.enabled)
+  ).map((m) => m.name);
+
   return {
     name: state.workflows.length === 1 ? state.workflows[0].name : 'fleet-job',
     workflows: state.workflows.map((w) => ({
       id: w.id, name: w.name, path: w.path, assets: w.assets, overrides: w.overrides,
     })),
     assignments: Object.fromEntries(
-      Object.entries(state.assignments).filter(([machine, id]) =>
-        workflowById(id) && state.config.machines.some((m) => m.name === machine && m.enabled)),
+      Object.entries(state.assignments).filter(([machine, id]) => workflowById(id) && machines.includes(machine)),
     ),
-    mode: $('input[name="mode"]:checked').value,
-    count: Number($('#count').value) || 1,
+    // each machine can ask for its own number of generations; blank falls back to the default
+    counts: Object.fromEntries(machines.map((m) => [m, state.counts[m] || state.defaultCount])),
+    count: state.defaultCount,
     seed: seedValue(),
-    machines: state.config.machines.filter((m) => m.enabled).map((m) => m.name),
+    machines,
     preflight: $('#preflight').checked,
     collect: {
       enabled: $('#collect-enabled').checked,
@@ -909,21 +970,23 @@ function seedValue() {
   return Number($('#seed-value').value) || 0;
 }
 
-function guard() {
+function guard(only = null) {
   if (!state.workflows.length) {
     selectTab('workflow');
     toast('Add a workflow first', 'error');
     return false;
   }
-  const enabled = state.config.machines.filter((m) => m.enabled);
-  if (enabled.length && !enabled.some((m) => workflowById(state.assignments[m.name]))) {
-    selectTab('machines');
-    toast('Assign a workflow to at least one machine', 'error');
-    return false;
-  }
-  if (!state.config.machines.some((m) => m.enabled)) {
+  const candidates = only && only.length
+    ? state.config.machines.filter((m) => only.includes(m.name))
+    : state.config.machines.filter((m) => m.enabled);
+  if (!candidates.length) {
     selectTab('machines');
     toast('Switch on at least one machine', 'error');
+    return false;
+  }
+  if (!candidates.some((m) => workflowById(state.assignments[m.name]))) {
+    selectTab('machines');
+    toast(only ? `Give ${only[0]} a workflow first` : 'Assign a workflow to at least one machine', 'error');
     return false;
   }
   return true;
@@ -939,19 +1002,23 @@ async function doCheck() {
   }
 }
 
-async function doRun() {
-  if (!guard()) return;
+/** Queue work. Machines already rendering carry on; this only adds to the ones named. */
+async function startWork(only = null) {
+  if (!guard(only)) return;
   showLog(true);
   try {
-    await api('/api/run', { method: 'POST', body: jobPayload() });
+    const data = await api('/api/run', { method: 'POST', body: jobPayload(only) });
+    const queued = (data.batches || []).reduce((sum, b) => sum + b.total, 0);
+    if (queued) toast(`Queued ${queued} generation${queued === 1 ? '' : 's'}`, 'good');
   } catch (err) {
     toast(err.message, 'error');
   }
 }
 
-async function doStop() {
+async function doStopAll() {
   try {
-    await api('/api/cancel', { method: 'POST', body: {} });
+    const data = await api('/api/cancel', { method: 'POST', body: {} });
+    if (data.fleet) applyFleet(data.fleet);
   } catch (err) {
     toast(err.message, 'error');
   }
@@ -960,31 +1027,48 @@ async function doStop() {
 function setBusy(busy, kind) {
   state.busy = busy;
   state.kind = kind;
-  $('[data-action="run"]').disabled = busy;
   $('[data-action="check"]').disabled = busy;
-  $('[data-action="stop"]').classList.toggle('hidden', !(busy && kind === 'run'));
-  if (!busy) renderMachines();
 }
 
-function renderProgress(progress) {
-  state.progress = progress;
-  const { total = 0, done = 0, failed = 0, files = 0 } = progress || {};
-  const bar = $('#progress-bar');
-  const pct = total ? ((done + failed) / total) * 100 : 0;
-  bar.style.width = `${pct}%`;
-  bar.classList.toggle('fail', failed > 0 && done === 0);
-  bar.classList.toggle('done', pct >= 100 && failed === 0);
-  $('#progress-text').textContent = total
-    ? `${done}/${total} done · ${failed} failed · ${files} files`
-    : state.busy ? 'Working…' : 'Idle';
+/** Draw the live worker state: totals in the dock, per-machine detail in the list. */
+function applyFleet(snapshot) {
+  state.fleet = snapshot;
+  const machines = snapshot?.machines || [];
+  const totals = machines.reduce(
+    (acc, m) => ({
+      done: acc.done + m.done, failed: acc.failed + m.failed, cancelled: acc.cancelled + (m.cancelled || 0),
+      queued: acc.queued + m.queued, running: acc.running + m.running, files: acc.files + m.files,
+    }),
+    { done: 0, failed: 0, cancelled: 0, queued: 0, running: 0, files: 0 },
+  );
+  const outstanding = totals.queued + totals.running;
+  const total = totals.done + totals.failed + totals.cancelled + outstanding;
 
-  $('#machine-chips').innerHTML = (progress?.machines || [])
+  const bar = $('#progress-bar');
+  const pct = total ? ((totals.done + totals.failed) / total) * 100 : 0;
+  bar.style.width = `${pct}%`;
+  bar.classList.toggle('fail', totals.failed > 0 && totals.done === 0);
+  bar.classList.toggle('done', total > 0 && !outstanding && !totals.failed);
+  $('#progress-text').textContent = total
+    ? `${totals.done}/${total} done${totals.failed ? ` · ${totals.failed} failed` : ''}` +
+      `${totals.cancelled ? ` · ${totals.cancelled} cancelled` : ''} · ${totals.files} files`
+    : 'Idle';
+
+  $('[data-action="stop"]').classList.toggle('hidden', !outstanding);
+
+  $('#machine-chips').innerHTML = machines
+    .filter((m) => m.status !== 'idle' || m.queued || m.running)
     .map((m) => {
-      const cls = m.state === 'offline' ? 'pill-red' : m.state === 'refused' ? 'pill-orange' : m.busy ? 'pill-blue' : 'pill-green';
-      const label = m.state === 'offline' ? 'dropped' : m.state === 'refused' ? 'refused' : m.busy ? `${m.busy} running` : 'idle';
+      const cls = m.status === 'offline' ? 'pill-red' : m.status === 'paused' ? 'pill-orange'
+        : m.running ? 'pill-blue' : 'pill-green';
+      const label = m.status === 'offline' ? 'not answering'
+        : m.status === 'paused' ? `paused · ${m.queued} waiting`
+        : m.running ? `${m.running} rendering${m.queued ? ` · ${m.queued} queued` : ''}`
+        : 'idle';
       return `<span class="pill ${cls}">${esc(m.name)} · ${label}</span>`;
     })
     .join('');
+
   renderMachines();
 }
 
@@ -1111,21 +1195,17 @@ document.addEventListener('click', (event) => {
         toast(`Saved to ${fileName(path)}`, 'good');
       } catch (err) { toast(err.message, 'error'); }
     },
-    'count-up': () => { $('#count').value = Number($('#count').value) + 1; saveUi(); },
-    'count-down': () => { $('#count').value = Math.max(1, Number($('#count').value) - 1); saveUi(); },
+    'count-up': () => { $('#count').value = Number($('#count').value) + 1; state.defaultCount = Number($('#count').value); renderMachines(); saveUi(); },
+    'count-down': () => { $('#count').value = Math.max(1, Number($('#count').value) - 1); state.defaultCount = Number($('#count').value); renderMachines(); saveUi(); },
     check: doCheck,
-    run: doRun,
-    stop: doStop,
+    run: () => startWork(),
+    stop: doStopAll,
     'toggle-log': () => showLog($('#log-wrap').classList.contains('hidden')),
   };
   actions[action]?.();
 });
 
-$$('input[name="mode"]').forEach((radio) =>
-  radio.addEventListener('change', () => {
-    $('#count-label').textContent = radio.value === 'mirror' ? 'Runs per machine' : 'Total generations';
-    saveUi();
-  }));
+
 
 ['#count', '#seed-value', '#destination', '#layout', '#collect-enabled', '#overwrite', '#preflight'].forEach((sel) =>
   $(sel).addEventListener('change', () => {
@@ -1147,7 +1227,7 @@ function saveUi() {
         })),
         selected: state.selected,
         assignments: state.assignments,
-        mode: $('input[name="mode"]:checked').value,
+        counts: state.counts,
         count: Number($('#count').value) || 1,
         seedMode: $('#seed-mode .seg-item[aria-selected="true"]').dataset.seed,
         seedValue: Number($('#seed-value').value) || 0,
@@ -1181,11 +1261,12 @@ async function boot() {
   $('#collect-enabled').checked = data.config.collect.enabled !== false;
   $('#overwrite').checked = !!data.config.collect.overwrite;
   $('#preflight').checked = ui.preflight !== false;
-  $('#count').value = ui.count || 10;
+  state.defaultCount = Number(ui.count) || 10;
+  state.counts = ui.counts || {};
+  $('#count').value = state.defaultCount;
   $('#seed-value').value = ui.seedValue || 0;
 
-  const mode = $(`input[name="mode"][value="${ui.mode || 'shard'}"]`);
-  if (mode) { mode.checked = true; mode.dispatchEvent(new Event('change')); }
+
   const seedItem = $(`#seed-mode .seg-item[data-seed="${ui.seedMode || 'random'}"]`);
   if (seedItem) seedItem.click();
 
@@ -1216,7 +1297,7 @@ async function boot() {
 
   for (const entry of data.log || []) appendLog(entry.line);
   setBusy(data.busy, data.kind);
-  if (data.progress) renderProgress(data.progress);
+  if (data.fleet) applyFleet(data.fleet);
   selectTab(localStorage.getItem('cf-tab') || 'machines');
 
   connectEvents();
@@ -1228,7 +1309,7 @@ function connectEvents() {
   source.onmessage = (event) => {
     const data = JSON.parse(event.data);
     if (data.type === 'log') appendLog(data.line);
-    else if (data.type === 'progress') renderProgress(data);
+    else if (data.type === 'fleet') applyFleet(data);
     else if (data.type === 'busy') setBusy(data.busy, data.kind);
     else if (data.type === 'done') {
       renderLastRun(data.manifest);

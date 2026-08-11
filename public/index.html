@@ -122,27 +122,17 @@
           </div>
         </div>
 
-        <!-- distribution -->
+        <!-- generations -->
         <div class="card">
-          <div class="card-head"><h2 class="card-title">How to spread the work</h2></div>
+          <div class="card-head">
+            <h2 class="card-title">Generations</h2>
+            <p class="card-sub">How many times each machine runs its workflow. Every machine can have
+              its own number — set them on the Machines tab; this is the default for machines you
+              have not given one.</p>
+          </div>
           <div class="space-y-3 p-4 pt-0">
-            <label class="choice">
-              <input type="radio" name="mode" value="shard" checked />
-              <span class="choice-body">
-                <span class="choice-title">Split the batch across machines</span>
-                <span class="choice-sub">Each run gets its own seed. Five machines finish a 100-image batch about five times sooner.</span>
-              </span>
-            </label>
-            <label class="choice">
-              <input type="radio" name="mode" value="mirror" />
-              <span class="choice-body">
-                <span class="choice-title">Mirror on every machine</span>
-                <span class="choice-sub">Every machine runs the same thing with the same seeds — for checking the fleet agrees.</span>
-              </span>
-            </label>
-
             <div class="row">
-              <span class="row-label" id="count-label">Total generations</span>
+              <span class="row-label" id="count-label">Default per machine</span>
               <div class="stepper">
                 <button data-action="count-down" aria-label="fewer">−</button>
                 <input id="count" type="number" min="1" value="10" />
@@ -280,9 +270,9 @@
       <button class="btn-secondary" data-action="check">Check machines</button>
       <button class="btn-primary" data-action="run">
         <svg class="size-4 fill-current" viewBox="0 0 24 24"><path d="M8 5v14l11-7L8 5Z"/></svg>
-        Run on fleet
+        Start all machines
       </button>
-      <button class="btn-danger hidden" data-action="stop">Stop</button>
+      <button class="btn-danger hidden" data-action="stop">Stop everything</button>
 
       <div class="flex min-w-[200px] flex-1 items-center gap-3">
         <div class="progress"><div id="progress-bar" class="progress-fill" style="width:0%"></div></div>
