@@ -1,0 +1,10 @@
+{
+  "workflow": "C:/Users/Virtual-Pc/Desktop/minimaxH3Image2Video.json",
+  "assets": "C:/Users/Virtual-Pc/Desktop",
+  "mode": "shard",
+  "count": "1",
+  "seed_mode": "random",
+  "seed_value": "0",
+  "preflight": true,
+  "overrides": []
+}
