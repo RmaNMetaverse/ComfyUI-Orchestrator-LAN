@@ -1,22 +1,28 @@
 <#
-.SYNOPSIS
-    Opens the normal Windows file/folder dialog and prints what was chosen.
+    Opens the normal Windows file/folder dialog and prints what was chosen -
+    one absolute path per line, or nothing when the dialog is cancelled.
 
-.DESCRIPTION
-    Called by ComfyFleet's web server so the browser can use Explorer's own picker
-    instead of a web imitation. Prints one absolute path per line, or nothing when
-    the dialog is cancelled. Must run with -STA for the dialogs to work.
+    Settings arrive through environment variables rather than parameters:
+    a filter like "ComfyUI workflow (*.json)|*.json" and a Windows path are
+    awkward to pass through PowerShell's -File argument parsing, and getting
+    it wrong makes the dialog silently fail to open.
+
+        CF_PICK_KIND     file | files | folder      (default: file)
+        CF_PICK_FILTER   OpenFileDialog filter string
+        CF_PICK_INITIAL  folder, or a file whose folder is used
+        CF_PICK_TITLE    dialog caption
+
+    Must run with -STA for the dialogs to work.
 #>
-[CmdletBinding()]
-param(
-    [ValidateSet('file', 'files', 'folder')][string]$Kind = 'file',
-    [string]$Filter = 'All files (*.*)|*.*',
-    [string]$Initial = '',
-    [string]$Title = 'Select'
-)
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms | Out-Null
+Add-Type -AssemblyName System.Drawing | Out-Null
+
+$kind = if ($env:CF_PICK_KIND) { $env:CF_PICK_KIND } else { 'file' }
+$filter = if ($env:CF_PICK_FILTER) { $env:CF_PICK_FILTER } else { 'All files (*.*)|*.*' }
+$initial = $env:CF_PICK_INITIAL
+$title = if ($env:CF_PICK_TITLE) { $env:CF_PICK_TITLE } else { 'Select' }
 
 # A hidden top-most form owns the dialog, so it comes up in front of the browser
 # instead of behind it.
@@ -30,25 +36,36 @@ $owner.Show()
 $owner.Activate()
 
 try {
-    if ($Kind -eq 'folder') {
+    if ($kind -eq 'folder') {
         $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-        $dialog.Description = $Title
+        $dialog.Description = $title
         $dialog.ShowNewFolderButton = $true
-        if ($Initial -and (Test-Path -LiteralPath $Initial)) { $dialog.SelectedPath = $Initial }
+        if ($initial -and (Test-Path -LiteralPath $initial)) { $dialog.SelectedPath = $initial }
+        if ($env:CF_PICK_SELFTEST) { Write-Output "SELFTEST-OK $($dialog.SelectedPath)"; return }
         if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             Write-Output $dialog.SelectedPath
         }
     }
     else {
         $dialog = New-Object System.Windows.Forms.OpenFileDialog
-        $dialog.Title = $Title
-        $dialog.Filter = $Filter
-        $dialog.Multiselect = ($Kind -eq 'files')
+        $dialog.Title = $title
+        $dialog.Filter = $filter
+        $dialog.Multiselect = ($kind -eq 'files')
         $dialog.CheckFileExists = $true
-        if ($Initial) {
-            $start = if (Test-Path -LiteralPath $Initial -PathType Container) { $Initial } else { Split-Path -LiteralPath $Initial -Parent }
+        if ($initial) {
+            # [IO.Path] rather than Split-Path: "Split-Path -LiteralPath X -Parent" is an
+            # ambiguous parameter set in PowerShell 7 and throws, which stopped the dialog
+            # from opening on every call that had a starting folder.
+            $start = $initial
+            if (Test-Path -LiteralPath $initial -PathType Leaf) {
+                $start = [System.IO.Path]::GetDirectoryName($initial)
+            }
             if ($start -and (Test-Path -LiteralPath $start)) { $dialog.InitialDirectory = $start }
         }
+        # CF_PICK_SELFTEST exercises everything above - assemblies, the owner window, the
+        # filter and the starting folder - without putting a modal dialog on screen, so the
+        # test suite can catch a broken picker.
+        if ($env:CF_PICK_SELFTEST) { Write-Output "SELFTEST-OK $($dialog.InitialDirectory)"; return }
         if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             $dialog.FileNames | ForEach-Object { Write-Output $_ }
         }

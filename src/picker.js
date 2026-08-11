@@ -54,17 +54,20 @@ function splitLines(stdout) {
 
 async function pickWindows({ kind, spec, initial, title }) {
   const script = path.join(APP_ROOT, 'tools', 'pick.ps1');
-  const args = [
-    '-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass',
-    '-File', script,
-    '-Kind', kind,
-    '-Filter', spec.windows,
-    '-Title', title,
-  ];
-  if (initial) args.push('-Initial', initial);
+  const args = ['-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-File', script];
+  // Settings go through the environment. Passing a filter full of "|" and "(*.json)" or a
+  // Windows path as -File parameters made PowerShell fail to bind them ("parameter set
+  // cannot be resolved"), and the dialog then never opened.
+  const env = {
+    ...process.env,
+    CF_PICK_KIND: kind,
+    CF_PICK_FILTER: spec.windows,
+    CF_PICK_TITLE: title,
+    CF_PICK_INITIAL: initial || '',
+  };
   try {
     // No timeout: the person may take as long as they like in the dialog.
-    const { stdout } = await run('powershell.exe', args, { windowsHide: false, maxBuffer: 1 << 20 });
+    const { stdout } = await run('powershell.exe', args, { windowsHide: false, maxBuffer: 1 << 20, env });
     return splitLines(stdout);
   } catch (err) {
     const detail = String(err.stderr || '').trim().split('\n')[0] || err.message;

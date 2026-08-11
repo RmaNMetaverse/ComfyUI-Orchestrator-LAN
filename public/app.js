@@ -1140,11 +1140,12 @@ document.addEventListener('click', (event) => {
     'refresh-status': refreshStatus,
     'save-fleet': () => saveFleet(),
     'browse-workflow': async () => {
-      const [chosen] = await choosePaths({
-        kind: 'file', filter: 'workflow', title: 'Choose an API workflow',
+      // multi-select: several workflows can be added in one go
+      const chosen = await choosePaths({
+        kind: 'files', filter: 'workflow', title: 'Add API workflows',
         initial: selectedWorkflow()?.path || '',
       });
-      if (chosen) loadWorkflow({ path: chosen });
+      for (const file of chosen) await loadWorkflow({ path: file });
     },
 
     'add-asset-file': async () => {

@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 
 import { ComfyClient, WorkflowRejected } from '../src/client.js';
@@ -47,6 +48,21 @@ function startMock({ port, name, delay = 0.4, root, tail = 0 }) {
   );
   mocks.push(child);
   return child;
+}
+
+/**
+ * Ask the OS for a spare port. Fixed numbers are a trap on Windows, where ranges get
+ * reserved by Hyper-V and binding then fails with EACCES.
+ */
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+  });
 }
 
 async function waitFor(url, tries = 60) {
@@ -125,20 +141,71 @@ function unitTests() {
   check('UI workflow is rejected with advice', threw.includes('Export (API)'), threw);
 }
 
+/* ═══════════════════════════════ file dialog ═════════════════════════════ */
+
+/**
+ * The Windows dialog is modal, so the suite cannot click it. CF_PICK_SELFTEST runs the
+ * whole script - assemblies, owner window, filter, starting folder - and stops just
+ * before it would go on screen. That is enough to catch the picker being broken, which
+ * is how "the second Add workflow does nothing" happened.
+ */
+async function pickerTests() {
+  if (process.platform !== 'win32') return;
+  console.log('\nfile dialog');
+
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const run = promisify(execFile);
+
+  const script = path.join(ROOT, 'tools', 'pick.ps1');
+  const attempt = async (label, extraEnv) => {
+    const args = ['-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-File', script];
+    const env = {
+      ...process.env,
+      CF_PICK_SELFTEST: '1',
+      CF_PICK_FILTER: 'ComfyUI workflow (*.json)|*.json|All files (*.*)|*.*',
+      CF_PICK_TITLE: label,
+      ...extraEnv,
+    };
+    try {
+      const { stdout, stderr } = await run('powershell.exe', args, { env, windowsHide: true });
+      return { ok: stdout.includes('SELFTEST-OK'), stdout: stdout.trim(), stderr: String(stderr).trim() };
+    } catch (err) {
+      return { ok: false, stdout: '', stderr: String(err.stderr || err.message).trim().split('\n')[0] };
+    }
+  };
+
+  const first = await attempt('add 1', { CF_PICK_KIND: 'files', CF_PICK_INITIAL: '' });
+  check('the file dialog opens with no starting folder', first.ok, first.stderr);
+
+  // the case that was broken: every add after the first passes the previous workflow's path
+  const second = await attempt('add 2', {
+    CF_PICK_KIND: 'files',
+    CF_PICK_INITIAL: path.join(ROOT, 'workflows', 'example_api.json'),
+  });
+  check('the file dialog opens when a previous file is the starting point', second.ok, second.stderr);
+  check('it starts in that file’s folder', second.stdout.includes(path.join(ROOT, 'workflows')), second.stdout);
+
+  const folder = await attempt('folder', { CF_PICK_KIND: 'folder', CF_PICK_INITIAL: ROOT });
+  check('the folder dialog opens with a starting folder', folder.ok, folder.stderr);
+}
+
 /* ════════════════════════════════ engine ═════════════════════════════════ */
 
 async function engineTests() {
   console.log('\nengine (against mock ComfyUI)');
 
   const rootA = path.join(TMP, 'mockA');
-  startMock({ port: 8841, name: 'MOCK-A', delay: 0.25, root: rootA });
-  startMock({ port: 8842, name: 'MOCK-B', delay: 0.25, root: path.join(TMP, 'mockB') });
-  await waitFor('http://127.0.0.1:8841/system_stats');
-  await waitFor('http://127.0.0.1:8842/system_stats');
+  const portA = await freePort();
+  const portB = await freePort();
+  startMock({ port: portA, name: 'MOCK-A', delay: 0.25, root: rootA });
+  startMock({ port: portB, name: 'MOCK-B', delay: 0.25, root: path.join(TMP, 'mockB') });
+  await waitFor(`http://127.0.0.1:${portA}/system_stats`);
+  await waitFor(`http://127.0.0.1:${portB}/system_stats`);
 
   const machines = [
-    { name: 'MOCK-A', host: '127.0.0.1', port: 8841, scheme: 'http', slots: 1, enabled: true, note: '' },
-    { name: 'MOCK-B', host: '127.0.0.1', port: 8842, scheme: 'http', slots: 1, enabled: true, note: '' },
+    { name: 'MOCK-A', host: '127.0.0.1', port: portA, scheme: 'http', slots: 1, enabled: true, note: '' },
+    { name: 'MOCK-B', host: '127.0.0.1', port: portB, scheme: 'http', slots: 1, enabled: true, note: '' },
   ];
   const dest = path.join(TMP, 'out');
   const config = fleetFor(machines, { destination: dest });
@@ -206,9 +273,10 @@ async function engineTests() {
   await fleet.waitUntilIdle();
 
   // a machine added later joins in
-  const extra = { name: 'MOCK-C', host: '127.0.0.1', port: 8843, scheme: 'http', slots: 1, enabled: true, note: '' };
-  startMock({ port: 8843, name: 'MOCK-C', delay: 0.25, root: path.join(TMP, 'mockC') });
-  await waitFor('http://127.0.0.1:8843/system_stats');
+  const portC = await freePort();
+  const extra = { name: 'MOCK-C', host: '127.0.0.1', port: portC, scheme: 'http', slots: 1, enabled: true, note: '' };
+  startMock({ port: portC, name: 'MOCK-C', delay: 0.25, root: path.join(TMP, 'mockC') });
+  await waitFor(`http://127.0.0.1:${portC}/system_stats`);
   fleet.configure({ ...config, machines: [...machines, extra] });
   check('a machine added mid-session appears', !!at(fleet.snapshot(), 'MOCK-C'));
   fleet.enqueue({ workflowId: 'w1', machines: ['MOCK-C'], count: 2, seed: 'random' });
@@ -291,7 +359,11 @@ async function webTests() {
   fs.mkdirSync(configDir, { recursive: true });
   fs.writeFileSync(path.join(configDir, 'nodes.json'), JSON.stringify(fleetFor([], {}), null, 2));
 
-  const server = spawn(process.execPath, [path.join(ROOT, 'bin', 'cf.js'), 'web', '--port', '8788'], {
+  const webPort = await freePort();
+  const mockPort = await freePort();
+  startMock({ port: mockPort, name: 'MOCK-A', delay: 0.2, root: path.join(TMP, 'webmock') });
+  await waitFor(`http://127.0.0.1:${mockPort}/system_stats`);
+  const server = spawn(process.execPath, [path.join(ROOT, 'bin', 'cf.js'), 'web', '--port', String(webPort)], {
     stdio: 'ignore',
     env: {
       ...process.env,
@@ -301,16 +373,16 @@ async function webTests() {
   });
   mocks.push(server);
   try {
-    await runWebChecks(server);
+    await runWebChecks(webPort, mockPort);
   } finally {
     server.kill();
   }
 }
 
-async function runWebChecks() {
-  await waitFor('http://127.0.0.1:8788/api/state');
+async function runWebChecks(webPort, mockPort) {
+  await waitFor(`http://127.0.0.1:${webPort}/api/state`);
 
-  const base = 'http://127.0.0.1:8788';
+  const base = `http://127.0.0.1:${webPort}`;
   const call = async (route, options = {}) => {
     const res = await fetch(base + route, {
       ...options,
@@ -329,7 +401,7 @@ async function runWebChecks() {
 
   const saved = await call('/api/fleet', {
     method: 'PUT',
-    body: fleetFor([{ name: 'MOCK-A', host: '127.0.0.1', port: 8841, slots: 2, enabled: true, note: 'test' }],
+    body: fleetFor([{ name: 'MOCK-A', host: '127.0.0.1', port: mockPort, slots: 2, enabled: true, note: 'test' }],
       { destination: path.join(TMP, 'webout') }),
   });
   check('/api/fleet saves machines', saved.status === 200 && saved.data.config.machines[0].name === 'MOCK-A');
@@ -448,6 +520,7 @@ async function runWebChecks() {
 
 try {
   unitTests();
+  await pickerTests();
   await engineTests();
   await webTests();
 } catch (err) {
