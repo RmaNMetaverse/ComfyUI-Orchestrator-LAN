@@ -273,7 +273,16 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/object_info') return json(objectInfo());
     if (url.pathname === '/prompt') return json({ exec_info: { queue_remaining: state.queue.length + state.running.length } });
-    if (url.pathname === '/queue') return json({ queue_running: state.running, queue_pending: state.queue.map((q) => q.promptId) });
+    if (url.pathname === '/queue') {
+      // Real ComfyUI returns entries as [number, prompt_id, prompt, extra_data, outputs].
+      // Returning bare ids here made the mock lie about what was queued, and the supervisor
+      // could not find its own jobs.
+      const entry = (id, prompt = {}) => [0, id, prompt, {}, []];
+      return json({
+        queue_running: state.running.map((id) => entry(id)),
+        queue_pending: state.queue.map((q) => entry(q.promptId, q.prompt)),
+      });
+    }
     if (url.pathname.startsWith('/history')) {
       const id = url.pathname.split('/').pop();
       if (!id || id === 'history') return json(state.history);

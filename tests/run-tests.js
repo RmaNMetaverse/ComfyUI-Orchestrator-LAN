@@ -214,6 +214,22 @@ async function engineTests() {
   const info = await new ComfyClient({ ...machines[0], timeout: 10000 }).ping();
   check('ping reports the GPU', info.gpu.includes('4090'), info.gpu);
 
+  // A job that is queued or running must be recognised as alive. This is what stops a long
+  // render being written off as "the machine no longer knows about this job": /history stays
+  // empty for both states, so /queue is the only way to tell them apart.
+  const liveClient = new ComfyClient({ ...machines[0], timeout: 10000 });
+  const slowGraph = Workflow.load(path.join(ROOT, 'workflows', 'example_api.json'));
+  const idOne = await liveClient.submit(slowGraph.data);
+  const idTwo = await liveClient.submit(slowGraph.data);
+  const ids = await liveClient.queueIds();
+  check('a running job is seen in the queue', ids.running.has(idOne) || ids.pending.has(idOne),
+    JSON.stringify({ running: [...ids.running], pending: [...ids.pending], idOne }));
+  check('a job waiting its turn is seen in the queue', ids.pending.has(idTwo) || ids.running.has(idTwo),
+    JSON.stringify({ pending: [...ids.pending], idTwo }));
+  await liveClient.clearQueue();
+  await liveClient.interrupt();
+  await sleep(400);
+
   const workflowPath = path.join(ROOT, 'workflows', 'example_api.json');
   const spec = (id, name) => ({
     id, name, path: workflowPath, assets: [], overrides: [], graph: Workflow.load(workflowPath),

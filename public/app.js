@@ -1299,7 +1299,12 @@ async function boot() {
   for (const entry of data.log || []) appendLog(entry.line);
   setBusy(data.busy, data.kind);
   if (data.fleet) applyFleet(data.fleet);
-  selectTab(localStorage.getItem('cf-tab') || 'machines');
+  // #machines / #workflow / #output opens straight on that tab, so a link or a bookmark
+  // can point at one; otherwise carry on where you left off.
+  const fromHash = location.hash.replace('#', '');
+  selectTab(['machines', 'workflow', 'output'].includes(fromHash)
+    ? fromHash
+    : localStorage.getItem('cf-tab') || 'machines');
 
   connectEvents();
   refreshStatus();

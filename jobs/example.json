@@ -1,18 +1,22 @@
 {
   "name": "example",
-  "workflow": "../workflows/example_api.json",
 
-  "assets": [],
-
-  "mode": "shard",
-  "count": 40,
-
-  "seed": "random",
-
-  "overrides": [
-    { "title": "Positive Prompt", "field": "text", "value": "a cinematic portrait of a lighthouse keeper, volumetric fog, 85mm" },
-    { "class": "EmptyLatentImage", "field": "batch_size", "value": 1 }
+  "workflows": [
+    {
+      "id": "portrait",
+      "path": "../workflows/example_api.json",
+      "assets": [],
+      "overrides": [
+        { "title": "Positive Prompt", "field": "text", "value": "a cinematic portrait of a lighthouse keeper, volumetric fog, 85mm" },
+        { "node": "3", "field": "steps", "value": 30 }
+      ]
+    }
   ],
+
+  "assignments": {},
+
+  "count": 40,
+  "seed": "random",
 
   "collectDestination": null
 }
