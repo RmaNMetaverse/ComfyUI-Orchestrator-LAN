@@ -26,7 +26,7 @@
       "host": "192.168.90.163",
       "port": 5555,
       "scheme": "http",
-      "enabled": false,
+      "enabled": true,
       "slots": 2,
       "note": "RTX 4090"
     },
