@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /** Command line front end: cf web | status | discover | check | run | cancel | free */
 
+import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -46,12 +47,48 @@ function timestamp() {
 /* ------------------------------------------------------------- commands */
 
 async function cmdWeb(args) {
-  await startWeb({
-    port: Number(args.flags.port) || 8787,
-    host: args.flags.host || '127.0.0.1',
-    open: args.flags.open !== undefined && args.flags.open !== 'false',
-  });
+  const port = Number(args.flags.port) || 8787;
+  const host = args.flags.host || '127.0.0.1';
+  const open = args.flags.open !== undefined && args.flags.open !== 'false';
+  const url = `http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`;
+
+  // Double-clicking the starter twice should not be an error: if ComfyFleet is already
+  // up on this port, just show it rather than failing to bind.
+  if (await alreadyRunning(url)) {
+    log(`ComfyFleet is already running at ${url}`);
+    if (open) openInBrowser(url);
+    return 0;
+  }
+
+  try {
+    await startWeb({ port, host, open });
+  } catch (err) {
+    if (err?.code === 'EADDRINUSE') {
+      log(`Something else is already using port ${port}.`);
+      log(`Start on another port with:  node bin/cf.js web --port ${port + 1}`);
+      return 1;
+    }
+    throw err;
+  }
   return new Promise(() => {}); // stay up until Ctrl+C
+}
+
+async function alreadyRunning(url) {
+  try {
+    const response = await fetch(`${url}/api/state`, { signal: AbortSignal.timeout(1500) });
+    if (!response.ok) return false;
+    const data = await response.json();
+    return Array.isArray(data?.config?.machines); // it answered like ComfyFleet, not something else
+  } catch {
+    return false;
+  }
+}
+
+function openInBrowser(url) {
+  const command = process.platform === 'win32' ? 'start ""'
+    : process.platform === 'darwin' ? 'open'
+      : 'xdg-open';
+  execSync(`${command} ${url}`, { stdio: 'ignore' });
 }
 
 async function cmdStatus(args) {

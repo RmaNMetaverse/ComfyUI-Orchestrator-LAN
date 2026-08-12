@@ -3,12 +3,24 @@
 Run your ComfyUI workflows across every GPU workstation on the LAN from one browser tab, and
 collect the outputs to a single shared folder as they are produced.
 
+Double-click the starter for your system — it launches the server and opens the interface in
+your browser:
+
+| System | File |
+|---|---|
+| Windows | `start-windows.cmd` |
+| macOS | `start-macos.command` |
+| Linux | `start-linux.sh` |
+
+Or from a terminal:
+
 ```bash
 npm start
 ```
 
-Then open **http://localhost:8787**. There is nothing to install — no npm dependencies, no build
-step. Node 20 or newer and the files in this folder are the whole thing.
+and open **http://localhost:8787**. There is nothing to install — no npm dependencies, no build
+step. Node 20 or newer and the files in this folder are the whole thing. Run a starter while
+ComfyFleet is already running and it simply opens the tab again rather than complaining.
 
 It drives the HTTP API that every ComfyUI install already runs — Desktop, portable and manual
 installs alike. Nothing has to be installed on the GPU machines themselves.
@@ -25,7 +37,9 @@ stays put wherever you are.
 ![The Machines tab](docs/machines.png)
 
 Add each ComfyUI box by address, or press *Find on network* to scan the subnet and pick from
-whatever answers. Every row is that machine's own control panel:
+whatever answers. The status pill says whether a machine answered, and an unreachable one
+explains itself — nothing listening, blocked by the firewall, or ComfyUI still bound to
+`127.0.0.1`. Every row is that machine's own control panel:
 
 - the **workflow** it runs,
 - how many **generations** it should do,
@@ -50,7 +64,8 @@ list creates an override for that workflow: prompt text, steps, cfg, resolution,
 the file. *All machines* puts one workflow on the whole fleet; *Remove* takes it out.
 
 The **Generations** number here is the default; a machine with its own number on the Machines tab
-uses that instead.
+uses that instead. If a workflow loads an input file nobody has added, the card says so by name
+before you start — as in the screenshot above.
 
 ### 3. Output
 
@@ -63,10 +78,8 @@ later with `cf run <file>`.
 
 ### The log
 
-![The live log](docs/log.png)
-
-Every machine reports as it goes, streamed from the server. Each batch signs off with its own
-summary, and every file says where it landed.
+*Show log* in the dock opens a live console: every machine reports as it goes, streamed from the
+server. Each batch signs off with its own summary, and every file says where it landed.
 
 Light and dark follow the system; the button in the header cycles auto → light → dark. The
 version badge next to the name tells you which build the page is running — handy after an update.
@@ -311,6 +324,9 @@ npm test
 ## Layout
 
 ```
+start-windows.cmd      double-click starters: run the server and open the browser
+start-macos.command
+start-linux.sh
 bin/cf.js              command line entry point
 src/fleet.js           the supervisor: one independent worker per machine
 src/server.js          web server: JSON API + live event stream

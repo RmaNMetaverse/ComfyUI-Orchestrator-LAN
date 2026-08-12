@@ -1,0 +1,9 @@
+# Line endings that matter.
+# A shell starter with CRLF fails on macOS and Linux with "bad interpreter: ^M",
+# and a .cmd wants CRLF, so pin both rather than leaving it to each clone's settings.
+*.sh        text eol=lf
+*.command   text eol=lf
+*.cmd       text eol=crlf
+*.ps1       text eol=crlf
+
+*.png       binary
