@@ -35,7 +35,7 @@
       "host": "192.168.90.26",
       "port": 5555,
       "scheme": "http",
-      "enabled": true,
+      "enabled": false,
       "slots": 2,
       "note": ""
     },
@@ -45,6 +45,15 @@
       "port": 5555,
       "scheme": "http",
       "enabled": false,
+      "slots": 2,
+      "note": "RTX 4090"
+    },
+    {
+      "name": "Jafarzadeh-PC",
+      "host": "192.168.90.175",
+      "port": 5555,
+      "scheme": "http",
+      "enabled": true,
       "slots": 2,
       "note": "RTX 4090"
     }
