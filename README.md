@@ -178,11 +178,11 @@ Everyone on the LAN then just opens a browser.
 
 **nginx cannot serve it on its own.** This is a Node server with a live API, not a folder of
 static files — copying it into a web root and pointing nginx at the files gives you a page that
-cannot talk to anything. nginx's job here is to forward port 80 to the Node process.
+cannot talk to anything. nginx's job here is to forward requests to the Node process, exactly
+the way you would proxy any other Node app.
 
 ```bash
 # on the server, as your normal user
-sudo apt install -y nginx
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
 
@@ -194,9 +194,45 @@ cd /var/www/html/comfyfleet
 sudo ./deploy/install-linux.sh
 ```
 
-That installs a **systemd service** (starts at boot, restarts if it ever dies) and an **nginx
-site** that proxies port 80 to it. When it finishes it prints the address to open — for a server
-called `virtualdev`, `http://virtualdev/` or its IP.
+The installer sets up a **systemd service** — starts at boot, restarts if it ever dies, listening
+on `127.0.0.1:8787` so only nginx can reach it. Then it writes an nginx **snippet** and stops,
+because a server that is already hosting things should not have its config rewritten by a script.
+
+### Fitting alongside sites you already have
+
+The installer never creates a server block, never edits or removes an existing site, and never
+touches `sites-enabled`. A second `server { listen 80; }` would compete with the one you have,
+and if its `server_name` matched first it would swallow the whole site — landing page included.
+
+Instead ComfyFleet becomes one more sub-path in the server block you already run, the same shape
+as a proxied app like `/fflf-extractor/`. Add one line inside that block:
+
+```nginx
+server {
+    listen 80 default_server;
+    listen 443 ssl;
+    # ... your landing page, /assetmanager_frontend/, /fflf-extractor/ and the rest ...
+
+    include /etc/nginx/snippets/comfyfleet.conf;
+}
+```
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+ComfyFleet is then at **`http://your-server/comfyfleet/`**, on http and https alike, with
+everything else untouched. The snippet is [deploy/nginx-comfyfleet.conf](deploy/nginx-comfyfleet.conf);
+it carries the two settings that matter:
+
+- `proxy_buffering off` — the live log and progress are server-sent events. With buffering on the
+  page looks frozen until a run finishes.
+- long `proxy_read_timeout` — a render holds its connection open.
+
+Uploads inherit whatever `client_max_body_size` your server block already sets.
+
+If you would rather give it a port of its own, skip the snippet entirely and run the service with
+`--host 0.0.0.0`; it is then at `http://your-server:8787/` and nginx is not involved at all.
 
 ```bash
 sudo systemctl status comfyfleet     # is it up
@@ -204,8 +240,8 @@ sudo systemctl restart comfyfleet    # after pulling changes
 journalctl -u comfyfleet -f          # live log
 ```
 
-The two files it installs are [deploy/comfyfleet.service](deploy/comfyfleet.service) and
-[deploy/nginx-comfyfleet.conf](deploy/nginx-comfyfleet.conf); edit them if your paths differ.
+Pick a different port with `sudo COMFYFLEET_PORT=8788 ./deploy/install-linux.sh` — the installer
+refuses to start if the port is already taken rather than failing later.
 
 ### Files, when the server is somewhere else
 

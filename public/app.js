@@ -272,7 +272,7 @@ $('#machine-list').addEventListener('click', async (event) => {
 });
 
 async function machineAction(machine, action) {
-  const data = await api('/api/machine', { method: 'POST', body: { machine, action } });
+  const data = await api('api/machine', { method: 'POST', body: { machine, action } });
   if (data.fleet) applyFleet(data.fleet);
 }
 
@@ -311,7 +311,7 @@ async function saveFleet(quiet = false) {
     overwrite: $('#overwrite').checked,
   };
   try {
-    const { config } = await api('/api/fleet', { method: 'PUT', body: state.config });
+    const { config } = await api('api/fleet', { method: 'PUT', body: state.config });
     state.config = config;
     if (!quiet) toast('Machine list saved', 'good');
   } catch (err) {
@@ -325,7 +325,7 @@ async function refreshStatus() {
   button.disabled = true;
   button.textContent = 'Checking…';
   try {
-    const { machines } = await api('/api/status', { method: 'POST', body: {} });
+    const { machines } = await api('api/status', { method: 'POST', body: {} });
     state.status = new Map(machines.map((m) => [m.name, m]));
     renderMachines();
   } catch (err) {
@@ -486,7 +486,7 @@ $('#node-tree').addEventListener('click', (event) => {
 async function loadWorkflow(payload, { replaceId = null } = {}) {
   let info;
   try {
-    info = await api('/api/workflow', { method: 'POST', body: payload });
+    info = await api('api/workflow', { method: 'POST', body: payload });
   } catch (err) {
     return toast(err.message, 'error');
   }
@@ -566,7 +566,7 @@ async function uploadInputFiles(files) {
     const size = file.size > 1024 ** 2 ? `${(file.size / 1024 ** 2).toFixed(1)} MB` : `${Math.round(file.size / 1024)} KB`;
     toast(`Uploading ${file.name} (${size})…`);
     try {
-      const result = await api(`/api/upload?name=${encodeURIComponent(file.name)}`, { method: 'POST', raw: file });
+      const result = await api(`api/upload?name=${encodeURIComponent(file.name)}`, { method: 'POST', raw: file });
       if (!wf.assets.includes(result.path)) {
         wf.assets.push(result.path);
         added += 1;
@@ -843,7 +843,7 @@ async function choosePaths({ kind = 'file', filter = 'any', initial = '', title 
   const button = document.activeElement;
   if (button?.tagName === 'BUTTON') button.disabled = true;
   try {
-    result = await api('/api/pick', { method: 'POST', body: { kind, filter, initial, title } });
+    result = await api('api/pick', { method: 'POST', body: { kind, filter, initial, title } });
   } catch (err) {
     toast(err.message, 'error');
     return [];
@@ -914,7 +914,7 @@ function discoverDialog() {
             range: $('[data-range]', root).value.trim(),
             ports: $('[data-ports]', root).value.split(',').map((p) => Number(p.trim())).filter(Boolean),
           };
-          ({ found } = await api('/api/discover', { method: 'POST', body }));
+          ({ found } = await api('api/discover', { method: 'POST', body }));
           chosen.clear();
           results.innerHTML = found.length
             ? found.map((info, i) => `
@@ -1033,7 +1033,7 @@ async function doCheck() {
   if (!guard()) return;
   showLog(true);
   try {
-    await api('/api/check', { method: 'POST', body: jobPayload() });
+    await api('api/check', { method: 'POST', body: jobPayload() });
   } catch (err) {
     toast(err.message, 'error');
   }
@@ -1044,7 +1044,7 @@ async function startWork(only = null) {
   if (!guard(only)) return;
   showLog(true);
   try {
-    const data = await api('/api/run', { method: 'POST', body: jobPayload(only) });
+    const data = await api('api/run', { method: 'POST', body: jobPayload(only) });
     const queued = (data.batches || []).reduce((sum, b) => sum + b.total, 0);
     if (queued) toast(`Queued ${queued} generation${queued === 1 ? '' : 's'}`, 'good');
   } catch (err) {
@@ -1054,7 +1054,7 @@ async function startWork(only = null) {
 
 async function doStopAll() {
   try {
-    const data = await api('/api/cancel', { method: 'POST', body: {} });
+    const data = await api('api/cancel', { method: 'POST', body: {} });
     if (data.fleet) applyFleet(data.fleet);
   } catch (err) {
     toast(err.message, 'error');
@@ -1225,13 +1225,13 @@ document.addEventListener('click', (event) => {
     },
     'open-destination': async () => {
       try {
-        await api('/api/open', { method: 'POST', body: { path: $('#destination').value.trim() } });
+        await api('api/open', { method: 'POST', body: { path: $('#destination').value.trim() } });
       } catch (err) { toast(err.message, 'error'); }
     },
     'save-job': async () => {
       if (!guard()) return;
       try {
-        const { path } = await api('/api/job', { method: 'POST', body: jobPayload() });
+        const { path } = await api('api/job', { method: 'POST', body: jobPayload() });
         toast(`Saved to ${fileName(path)}`, 'good');
       } catch (err) { toast(err.message, 'error'); }
     },
@@ -1265,7 +1265,7 @@ let saveTimer = null;
 function saveUi() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    api('/api/ui', {
+    api('api/ui', {
       method: 'PUT',
       body: {
         workflows: state.workflows.map((w) => ({
@@ -1288,7 +1288,7 @@ function saveUi() {
 async function boot() {
   let data;
   try {
-    data = await api('/api/state');
+    data = await api('api/state');
   } catch (err) {
     return toast(`Cannot reach the ComfyFleet server: ${err.message}`, 'error');
   }
@@ -1324,7 +1324,7 @@ async function boot() {
   const saved = ui.workflows?.length ? ui.workflows : ui.workflow ? [{ path: ui.workflow }] : [];
   for (const entry of saved) {
     try {
-      const info = await api('/api/workflow', { method: 'POST', body: { path: entry.path } });
+      const info = await api('api/workflow', { method: 'POST', body: { path: entry.path } });
       const id = entry.id || newWorkflowId();
       nextWorkflowId = Math.max(nextWorkflowId, Number(String(id).replace(/\D/g, '')) + 1 || nextWorkflowId);
       state.workflows.push({
@@ -1357,7 +1357,7 @@ async function boot() {
 }
 
 function connectEvents() {
-  const source = new EventSource('/api/events');
+  const source = new EventSource('api/events');
   source.onmessage = (event) => {
     const data = JSON.parse(event.data);
     if (data.type === 'log') appendLog(data.line);

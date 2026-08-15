@@ -28,13 +28,16 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=comfyfleet
 
-# Modest hardening. The service needs to write config/, workflows/, uploads/ and the
-# output folder, so keep those writable and leave the rest read-only.
+# Modest hardening. The service writes config/, workflows/, uploads/ and the output
+# folder, so those stay writable and the rest is left alone.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=read-only
-ReadWritePaths=/var/www/html/comfyfleet /mnt/renders
+ReadWritePaths=/var/www/html/comfyfleet
+# The folder outputs are collected into. The leading "-" means "skip if it does not
+# exist" - without it systemd refuses to start the service when the mount is absent.
+ReadWritePaths=-/mnt/renders
 
 [Install]
 WantedBy=multi-user.target
