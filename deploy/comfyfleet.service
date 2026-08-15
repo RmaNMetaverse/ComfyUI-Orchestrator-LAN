@@ -1,0 +1,40 @@
+[Unit]
+Description=ComfyFleet - ComfyUI fleet orchestrator
+Documentation=https://github.com/RmaNMetaverse/ComfyUI-Orchestrator-LAN
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Adjust these three if you put it somewhere else or run as another user.
+User=virtual
+Group=virtual
+WorkingDirectory=/var/www/html/comfyfleet
+
+# Bind to every interface so the rest of the LAN can reach it. nginx proxies to this
+# port; nothing outside the machine needs to touch 8787 directly.
+ExecStart=/usr/bin/node bin/cf.js web --host 127.0.0.1 --port 8787
+
+# No desktop here, so never try to open a file dialog: the browser uploads instead.
+Environment=COMFYFLEET_PICKER=off
+Environment=NODE_ENV=production
+
+Restart=always
+RestartSec=3
+
+# Journal gets stdout/stderr:  journalctl -u comfyfleet -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=comfyfleet
+
+# Modest hardening. The service needs to write config/, workflows/, uploads/ and the
+# output folder, so keep those writable and leave the rest read-only.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/var/www/html/comfyfleet /mnt/renders
+
+[Install]
+WantedBy=multi-user.target

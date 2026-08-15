@@ -56,7 +56,9 @@ more work at any time, including while a render is in progress.
 ![The Workflow tab](docs/workflow.png)
 
 Hold **as many workflows as you like**. Drop the exported `.json` files onto the page, or press
-*Add workflow* and select several at once in the normal Windows file dialog.
+*Add workflow* and select several at once in the file dialog. Input files work the same way —
+drop images, video, audio or 3D files anywhere on the page and they upload to the machine running
+ComfyFleet, which is what makes this usable when it runs on a server elsewhere.
 
 Each workflow keeps its own **input files** and **overrides** — select one in the list and the
 panels below (and the node inspector on the right) apply to it. Clicking any setting in the node
@@ -158,12 +160,90 @@ To reach the interface from another machine on the network:
 node bin/cf.js web --host 0.0.0.0 --port 8787
 ```
 
-**File dialogs.** *Add workflow*, *Add files* and *Browse* open the real Windows file dialog on the
-machine running ComfyFleet — deliberately, since the paths have to make sense to the server rather
-than to your browser. If you drive the interface from a different computer the dialog would open
-on the server's screen where nobody can see it, so start the server with `COMFYFLEET_PICKER=off`
-and it will ask you to type paths instead. It falls back to that automatically on a machine with
-no desktop.
+**File dialogs.** When ComfyFleet runs on the machine you are sitting at, *Add workflow*,
+*Add files* and *Browse* open the real Windows file dialog, so you can point straight at files
+already on that disk.
+
+When it runs somewhere else, that would open a window on the server's screen where nobody can see
+it. Start the server with `COMFYFLEET_PICKER=off` (the Linux service does this for you) and the
+buttons use your own browser's picker instead, uploading the files to the server. Dragging files
+onto the page always uploads, wherever the server is.
+
+---
+
+## Running it on a Linux server (always on)
+
+ComfyFleet can live on a small always-on box so nobody has to leave a workstation running.
+Everyone on the LAN then just opens a browser.
+
+**nginx cannot serve it on its own.** This is a Node server with a live API, not a folder of
+static files — copying it into a web root and pointing nginx at the files gives you a page that
+cannot talk to anything. nginx's job here is to forward port 80 to the Node process.
+
+```bash
+# on the server, as your normal user
+sudo apt install -y nginx
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+
+sudo mkdir -p /var/www/html/comfyfleet
+sudo chown -R $USER:$USER /var/www/html/comfyfleet
+git clone https://github.com/RmaNMetaverse/ComfyUI-Orchestrator-LAN.git /var/www/html/comfyfleet
+cd /var/www/html/comfyfleet
+
+sudo ./deploy/install-linux.sh
+```
+
+That installs a **systemd service** (starts at boot, restarts if it ever dies) and an **nginx
+site** that proxies port 80 to it. When it finishes it prints the address to open — for a server
+called `virtualdev`, `http://virtualdev/` or its IP.
+
+```bash
+sudo systemctl status comfyfleet     # is it up
+sudo systemctl restart comfyfleet    # after pulling changes
+journalctl -u comfyfleet -f          # live log
+```
+
+The two files it installs are [deploy/comfyfleet.service](deploy/comfyfleet.service) and
+[deploy/nginx-comfyfleet.conf](deploy/nginx-comfyfleet.conf); edit them if your paths differ.
+
+### Files, when the server is somewhere else
+
+This is the part worth understanding, because two kinds of file behave differently:
+
+| | How it gets there | Works from a remote browser |
+|---|---|---|
+| **Workflows** (`.json`) | Dropped on the page, read in the browser, sent to the server | **Yes** |
+| **Input files** (images, video, audio, 3D) | Dropped on the page or picked with *Add files*, uploaded to the server | **Yes** |
+| **Models** (checkpoints, LoRAs) | Never travel through ComfyFleet — synced to each machine separately | n/a |
+
+Drag a workflow and its input files onto the page from whatever computer you are sitting at.
+They upload to the server, and when a run starts the server pushes the input files into each
+ComfyUI machine's `input/` folder before queueing the work. Uploads land in `uploads/` on the
+server (`COMFYFLEET_UPLOADS` moves that elsewhere).
+
+The service sets `COMFYFLEET_PICKER=off`, because a file dialog on a headless server helps
+nobody. With it off, *Add files* opens your own browser's file picker and uploads, rather than
+trying to open a window on the server's non-existent desktop.
+
+### Two things to get right
+
+**The output folder must be reachable from the server.** Collection happens on the machine
+running ComfyFleet, so a Windows UNC path such as `\\FILESERVER\share` means nothing to Linux.
+Mount the share and use the mount point:
+
+```bash
+sudo apt install -y cifs-utils
+sudo mkdir -p /mnt/renders
+sudo mount -t cifs //FILESERVER/share /mnt/renders -o username=YOU,uid=$USER,gid=$USER
+```
+
+Add it to `/etc/fstab` to survive a reboot, then set the destination on the Output tab to
+`/mnt/renders`. A plain local folder such as `/var/renders` works just as well.
+
+**There is no login.** Anyone who can reach the server can queue work on your GPUs and read the
+outputs. On a trusted office LAN that is usually fine; if not, the nginx config has a commented
+basic-auth block ready to switch on.
 
 ---
 
@@ -272,6 +352,7 @@ and no `assignments` runs it on every machine.
 | Path | What it is |
 |---|---|
 | `config/nodes.json` | the fleet: machines, ports, output location |
+| `uploads/` | input files sent from a browser |
 | `config/ui-state.json` | what the browser had open last (written automatically) |
 | `jobs/*.json` | saved jobs |
 | `workflows/*.json` | API-format exports from ComfyUI |
@@ -280,7 +361,10 @@ Two environment variables change where things live:
 
 - `COMFYFLEET_CONFIG=<folder>` — use a different config folder. The test suite uses this so a test
   run can never write over the fleet you actually use.
-- `COMFYFLEET_PICKER=off` — never open native file dialogs; ask for typed paths instead.
+- `COMFYFLEET_PICKER=off` — never open native file dialogs. Set this on a server: *Add files*
+  then uses the browser's own picker and uploads, instead of trying to open a window on a
+  desktop that is not there.
+- `COMFYFLEET_UPLOADS=<folder>` — where uploaded input files are kept (default `uploads/`).
 
 ---
 
@@ -339,6 +423,7 @@ src/config.js          fleet and job configuration
 src/runner.js          shared helpers: asset lists, safe paths, manifests
 public/                the interface: index.html, app.js, styles.css, vendored Tailwind
 tests/run-tests.js     end-to-end tests
+deploy/                        systemd unit, nginx site and the Linux installer
 tools/mock-comfy.js            fake ComfyUI for testing
 tools/pick.ps1                 the Windows file dialog helper
 tools/Enable-ComfyRemote.ps1   per-machine firewall + listen setup

@@ -12,6 +12,12 @@ const CONFIG_DIR = process.env.COMFYFLEET_CONFIG
 export const FLEET_PATH = path.join(CONFIG_DIR, 'nodes.json');
 export const UI_STATE_PATH = path.join(CONFIG_DIR, 'ui-state.json');
 export const WORKFLOW_DIR = path.join(APP_ROOT, 'workflows');
+
+// Where files sent from a browser land. Anyone driving the interface from another
+// computer uploads here first; the machines are then fed from this copy.
+export const UPLOAD_DIR = process.env.COMFYFLEET_UPLOADS
+  ? path.resolve(process.env.COMFYFLEET_UPLOADS)
+  : path.join(APP_ROOT, 'uploads');
 export const JOBS_DIR = path.join(APP_ROOT, 'jobs');
 export const PUBLIC_DIR = path.join(APP_ROOT, 'public');
 export const DEFAULT_OUTPUT_DIR = path.join(APP_ROOT, 'outputs');

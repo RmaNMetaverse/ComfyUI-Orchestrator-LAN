@@ -164,11 +164,16 @@
                 machines running it, before the run. Models do not go here.</p>
             </div>
             <div id="asset-list" class="divide-y divide-black/6 dark:divide-white/8"></div>
-            <div class="flex gap-2 p-4 pt-3">
+            <div class="flex flex-wrap gap-2 p-4 pt-3">
               <button class="btn-secondary" data-action="add-asset-file">Add files…</button>
               <button class="btn-secondary" data-action="add-asset-folder">Add folder…</button>
               <button id="clear-assets" class="btn-ghost ml-auto hidden" data-action="clear-assets">Remove all</button>
             </div>
+            <p class="px-4 pb-4 -mt-1 text-[12px] text-ios-gray">
+              You can also drag files straight onto this page — they upload to the machine running
+              ComfyFleet, which is what you want when it runs on a server.
+            </p>
+            <input id="file-input" type="file" multiple class="hidden" />
           </div>
 
           <div class="card">

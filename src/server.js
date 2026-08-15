@@ -15,10 +15,10 @@ import {
 } from './config.js';
 import { DEFAULT_PORTS, scan } from './discover.js';
 import { FleetSupervisor } from './fleet.js';
-import { APP_ROOT, FLEET_PATH, JOBS_DIR, PUBLIC_DIR, UI_STATE_PATH, WORKFLOW_DIR } from './paths.js';
+import { APP_ROOT, FLEET_PATH, JOBS_DIR, PUBLIC_DIR, UI_STATE_PATH, UPLOAD_DIR, WORKFLOW_DIR } from './paths.js';
 import { pick } from './picker.js';
 import { checkMachine, describeMissing, summarize } from './preflight.js';
-import { assetNames, safeName } from './runner.js';
+import { assetNames, safeName, safePathPart } from './runner.js';
 import { Workflow, WorkflowError } from './workflow.js';
 
 const MIME = {
@@ -357,6 +357,8 @@ async function handleApi(req, res, url) {
       log: run.log.slice(-400),
       platform: process.platform,
       version: appVersion(),
+      // false on a headless server: the browser must upload instead of asking for a dialog
+      nativeDialogs: process.platform === 'win32' && process.env.COMFYFLEET_PICKER !== 'off',
       paths: { fleet: FLEET_PATH, workflows: WORKFLOW_DIR, jobs: JOBS_DIR },
     });
   }
@@ -468,6 +470,38 @@ async function handleApi(req, res, url) {
     );
     results.forEach(pushLog);
     return sendJson(res, 200, { ok: true });
+  }
+
+  if (route === '/api/upload' && req.method === 'POST') {
+    // The browser sends raw bytes with the name in the query string. No multipart parsing,
+    // no dependency, and the body is streamed straight to disk so a 2 GB video does not
+    // have to fit in memory.
+    const raw = url.searchParams.get('name') || 'upload';
+    const name = safePathPart(path.basename(raw), 'upload');
+    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+    let dest = path.join(UPLOAD_DIR, name);
+    const ext = path.extname(name);
+    const stem = path.basename(name, ext);
+    for (let n = 1; fs.existsSync(dest); n += 1) dest = path.join(UPLOAD_DIR, `${stem}_${n}${ext}`);
+
+    const limit = 4 * 1024 ** 3;
+    let size = 0;
+    const file = fs.createWriteStream(dest);
+    try {
+      for await (const chunk of req) {
+        size += chunk.length;
+        if (size > limit) throw new Error('file is larger than 4 GB');
+        if (!file.write(chunk)) await new Promise((resolve) => file.once('drain', resolve));
+      }
+      await new Promise((resolve, reject) => file.end((err) => (err ? reject(err) : resolve())));
+    } catch (err) {
+      file.destroy();
+      fs.rmSync(dest, { force: true });
+      return sendJson(res, 400, { error: `upload failed: ${err.message}` });
+    }
+    pushLog(`  ↑ received ${path.basename(dest)} (${(size / 1024 ** 2).toFixed(1)} MB)`);
+    return sendJson(res, 200, { path: dest, name: path.basename(dest), bytes: size });
   }
 
   if (route === '/api/pick' && req.method === 'POST') {

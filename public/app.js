@@ -13,6 +13,7 @@ const state = {
   counts: {},      // machine name -> generations (blank = use the default below)
   defaultCount: 10,
   fleet: null,     // live worker state pushed from the server
+  nativeDialogs: true, // false when the server has no desktop: upload from the browser
   busy: false,     // a machine check is running
   kind: null,
   expandedNodes: new Set(),
@@ -39,9 +40,10 @@ function formatBytes(n) {
   return `${n < 10 && i > 0 ? n.toFixed(1) : Math.round(n)} ${units[i]}`;
 }
 
-async function api(path, { method = 'GET', body } = {}) {
+async function api(path, { method = 'GET', body, raw } = {}) {
   const response = await fetch(path, {
     method,
+    ...(raw !== undefined ? { body: raw } : {}),
     ...(body !== undefined ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
   });
   const text = await response.text();
@@ -528,22 +530,57 @@ const zone = $('#drop-zone');
 ['dragleave', 'drop'].forEach((type) =>
   zone.addEventListener(type, (e) => { e.preventDefault(); zone.classList.remove('dragging'); }));
 document.addEventListener('dragover', (e) => e.preventDefault());
+/**
+ * Drop anything onto the page: .json files become workflows, everything else is
+ * uploaded to the server as an input file for the selected workflow. This is the path
+ * that matters when ComfyFleet runs on a server somewhere else - the browser sends the
+ * bytes, and the server feeds them to the machines from there.
+ */
 document.addEventListener('drop', async (event) => {
   const files = [...(event.dataTransfer?.files || [])];
   if (!files.length) return;
   event.preventDefault();
-  for (const file of files) {
-    if (!file.name.toLowerCase().endsWith('.json')) {
-      toast(`${file.name} is not a .json workflow`, 'error');
-      continue;
-    }
+
+  const workflows = files.filter((f) => f.name.toLowerCase().endsWith('.json'));
+  const assets = files.filter((f) => !f.name.toLowerCase().endsWith('.json'));
+
+  for (const file of workflows) {
     try {
       await loadWorkflow({ name: file.name, data: JSON.parse(await file.text()) });
     } catch {
       toast(`${file.name} is not valid JSON`, 'error');
     }
   }
+  if (assets.length) await uploadInputFiles(assets);
 });
+
+/** Send files to the server and attach them to the selected workflow. */
+async function uploadInputFiles(files) {
+  const wf = selectedWorkflow();
+  if (!wf) {
+    selectTab('workflow');
+    return toast('Add a workflow first, then its input files', 'error');
+  }
+  let added = 0;
+  for (const file of files) {
+    const size = file.size > 1024 ** 2 ? `${(file.size / 1024 ** 2).toFixed(1)} MB` : `${Math.round(file.size / 1024)} KB`;
+    toast(`Uploading ${file.name} (${size})…`);
+    try {
+      const result = await api(`/api/upload?name=${encodeURIComponent(file.name)}`, { method: 'POST', raw: file });
+      if (!wf.assets.includes(result.path)) {
+        wf.assets.push(result.path);
+        added += 1;
+      }
+    } catch (err) {
+      toast(`${file.name}: ${err.message}`, 'error');
+    }
+  }
+  if (added) {
+    renderWorkflows();
+    saveUi();
+    toast(`Added ${added} input file${added === 1 ? '' : 's'} to ${wf.name}`, 'good');
+  }
+}
 
 /* ──────────────────────────────── assets ─────────────────────────────────── */
 
@@ -1148,7 +1185,9 @@ document.addEventListener('click', (event) => {
       for (const file of chosen) await loadWorkflow({ path: file });
     },
 
+    'upload-asset-file': () => $('#file-input').click(),
     'add-asset-file': async () => {
+      if (!state.nativeDialogs) return $('#file-input').click(); // headless server: upload instead
       const paths = await choosePaths({ kind: 'files', filter: 'media', title: 'Add input files' });
       const wf = selectedWorkflow();
       if (!wf) return;
@@ -1214,6 +1253,12 @@ document.addEventListener('click', (event) => {
     if (['#destination', '#layout', '#collect-enabled', '#overwrite'].includes(sel)) saveFleet(true);
   }));
 
+$('#file-input').addEventListener('change', async (event) => {
+  const files = [...event.target.files];
+  event.target.value = ''; // so picking the same file twice still fires
+  if (files.length) await uploadInputFiles(files);
+});
+
 /* ──────────────────────────── state persistence ─────────────────────────── */
 
 let saveTimer = null;
@@ -1250,6 +1295,7 @@ async function boot() {
   if (data.configError) toast(data.configError, 'error');
 
   state.config = data.config;
+  state.nativeDialogs = data.nativeDialogs !== false;
   if (data.version) {
     const badge = $('#version');
     if (badge) badge.textContent = `v${data.version}`;

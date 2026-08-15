@@ -525,6 +525,20 @@ async function runWebChecks(webPort, mockPort) {
   const badAction = await call('/api/machine', { method: 'POST', body: { machine: 'MOCK-A', action: 'explode' } });
   check('an unknown machine action is refused', badAction.status === 400, JSON.stringify(badAction.data));
 
+  // Uploading from the browser: the path that matters when ComfyFleet runs on a server
+  // somewhere else, where no file dialog can help.
+  const payload = Buffer.alloc(256 * 1024, 9);
+  const uploaded = await fetch(`${base}/api/upload?name=${encodeURIComponent('drag drop.mp4')}`, {
+    method: 'POST', body: payload,
+  }).then((r) => r.json());
+  check('/api/upload stores what the browser sent', !!uploaded.path && fs.existsSync(uploaded.path),
+    JSON.stringify(uploaded));
+  check('the uploaded bytes are intact', fs.statSync(uploaded.path).size === payload.length,
+    String(uploaded.bytes));
+  check('the name is kept, minus anything a filesystem would refuse',
+    path.basename(uploaded.path) === 'drag drop.mp4', path.basename(uploaded.path));
+  fs.rmSync(uploaded.path, { force: true });
+
   const rejected = await call('/api/run', { method: 'POST', body: { workflows: [], machines: ['MOCK-A'] } });
   check('a run without a workflow is refused politely', rejected.status === 400 && !!rejected.data.error,
     JSON.stringify(rejected.data));

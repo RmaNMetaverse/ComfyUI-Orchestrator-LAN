@@ -6,3 +6,6 @@ config/ui-state.json
 # local test / run output
 outputs/
 tools/_mock/
+
+# input files sent from a browser
+uploads/

@@ -250,10 +250,19 @@ function multipartFilename(body) {
 }
 
 function multipartPayload(body) {
-  const separator = body.indexOf('\r\n\r\n');
-  if (separator === -1) return body;
-  const end = body.lastIndexOf('\r\n--');
-  return body.subarray(separator + 4, end > separator ? end : body.length);
+  // Cut at the boundary that ends *this* part. Using the last "\r\n--" in the body swept up
+  // the following form fields as well, so the file arrived a couple of hundred bytes fat.
+  const text = body.toString('latin1'); // 1 byte per char, so text offsets are byte offsets
+  const firstLineEnd = text.indexOf('\r\n');
+  if (firstLineEnd === -1) return body;
+  const boundary = text.slice(0, firstLineEnd);
+
+  const headerEnd = text.indexOf('\r\n\r\n');
+  if (headerEnd === -1) return body;
+  const start = headerEnd + 4;
+
+  const end = text.indexOf(`\r\n${boundary}`, start);
+  return body.subarray(start, end > start ? end : body.length);
 }
 
 const server = http.createServer(async (req, res) => {
