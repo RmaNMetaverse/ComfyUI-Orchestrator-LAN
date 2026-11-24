@@ -1,0 +1,84 @@
+openapi: 3.0.3
+info:
+  title: ComfyFleet local API
+  version: 2.1.0
+  description: |
+    A small reference for an endpoint that works on a clean ComfyFleet setup.
+    This is the API of the local ComfyFleet server, not the ComfyUI worker API.
+    ComfyFleet has no built-in authentication. Keep it on a trusted network.
+servers:
+  - url: http://localhost:8787
+    description: Default local ComfyFleet server
+paths:
+  /api/state:
+    get:
+      tags:
+        - State
+      summary: Read the current application state
+      description: |
+        Returns the saved fleet configuration and a snapshot of the running fleet.
+        It works before any ComfyUI machine has been added. A broken configuration
+        file is reported in `configError` while the HTTP response remains 200.
+      operationId: getState
+      responses:
+        '200':
+          description: Current configuration and runtime state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [config, configError, fleet, busy, kind, log, platform, version, nativeDialogs, paths]
+                properties:
+                  config:
+                    type: object
+                    required: [fleet, collect, machines]
+                    properties:
+                      fleet:
+                        type: object
+                        description: Timing and fleet settings.
+                      collect:
+                        type: object
+                        description: Output collection settings.
+                      machines:
+                        type: array
+                        items:
+                          type: object
+                        description: Configured ComfyUI workers; empty on a new setup.
+                  ui:
+                    type: object
+                    nullable: true
+                    description: Saved browser interface state, when present.
+                  configError:
+                    type: string
+                    nullable: true
+                    description: Configuration read error, or null when valid.
+                  fleet:
+                    type: object
+                    description: Live status snapshot for the configured machines.
+                  busy:
+                    type: boolean
+                  kind:
+                    type: string
+                    nullable: true
+                  log:
+                    type: array
+                    items:
+                      type: object
+                  platform:
+                    type: string
+                    example: win32
+                  version:
+                    type: string
+                    example: 2.1.0
+                  nativeDialogs:
+                    type: boolean
+                  paths:
+                    type: object
+                    required: [fleet, workflows, jobs]
+                    properties:
+                      fleet:
+                        type: string
+                      workflows:
+                        type: string
+                      jobs:
+                        type: string

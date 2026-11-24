@@ -1,0 +1,25 @@
+{
+  "name": "comfyfleet-docs",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "prestart": "npm run generate:api",
+    "start": "docusaurus start",
+    "generate:api": "docusaurus gen-api-docs all",
+    "build": "npm run generate:api && docusaurus build"
+  },
+  "dependencies": {
+    "@docusaurus/core": "3.10.2",
+    "@docusaurus/preset-classic": "3.10.2",
+    "docusaurus-plugin-openapi-docs": "5.2.0",
+    "docusaurus-theme-openapi-docs": "5.2.0",
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
+  },
+  "overrides": {
+    "webpack": "5.99.9"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,5 +1,9 @@
 # ComfyFleet
 
+**[Quickstart and API documentation](https://rmanmetaverse.github.io/ComfyUI-Orchestrator-LAN/)**
+
+The separate [BlinkID TypeScript reader example](examples/microblink-web/README.md) walks through Microblink's browser SDK setup.
+
 Run your ComfyUI workflows across every GPU workstation on the LAN from one browser tab, and
 collect the outputs to a single shared folder as they are produced.
 

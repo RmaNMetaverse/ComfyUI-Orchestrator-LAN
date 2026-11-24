@@ -1,0 +1,72 @@
+---
+id: quickstart
+slug: /
+title: Try ComfyFleet locally
+description: Start ComfyFleet and test its state endpoint without a GPU.
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# Try ComfyFleet locally
+
+ComfyFleet is a small server that coordinates [ComfyUI](https://github.com/comfyanonymous/ComfyUI) machines. This guide starts the server and calls one of its own API endpoints. **You do not need a GPU or ComfyUI installation for this first request.**
+
+## 1. Get the code
+
+Install [Node.js 20 or newer](https://nodejs.org/) and Git, then run:
+
+```bash
+git clone https://github.com/RmaNMetaverse/ComfyUI-Orchestrator-LAN.git
+cd ComfyUI-Orchestrator-LAN
+node --version
+```
+
+The application itself has no npm packages to install. The documentation website has its own dependencies under `site/`.
+
+## 2. Start the local server
+
+```bash
+npm start
+```
+
+Open [http://localhost:8787](http://localhost:8787) in your browser. Leave this terminal running.
+
+## 3. Make a real API request
+
+In a second terminal, run the command for your shell:
+
+<Tabs>
+  <TabItem value="powershell" label="PowerShell" default>
+
+```powershell
+Invoke-RestMethod http://localhost:8787/api/state | ConvertTo-Json -Depth 5
+```
+
+  </TabItem>
+  <TabItem value="bash" label="macOS / Linux">
+
+```bash
+curl -sS http://localhost:8787/api/state
+```
+
+  </TabItem>
+</Tabs>
+
+You should get JSON (structured text) with `config`, `fleet`, and `version`. On a fresh setup, `config.machines` is an empty list. The endpoint is described in the [generated API reference](./api/get-state) and its [OpenAPI source file](https://github.com/RmaNMetaverse/ComfyUI-Orchestrator-LAN/blob/main/site/static/openapi.yaml).
+
+The public docs are hosted over HTTPS. Use the terminal command above to call your local HTTP server; a request from the public page's in-browser API explorer may be blocked by browser security rules.
+
+## 4. Try a worker without a GPU
+
+The repository includes a mock ComfyUI worker. In another terminal from the repository root, run:
+
+```bash
+node tools/mock-comfy.js --port 8801 --name MOCK-01 --delay 1
+```
+
+In the ComfyFleet browser tab, go to **Machines** and add a machine with address `127.0.0.1` and port `8801`. Use **Check machines** to confirm it responds. This worker is only for learning and testing; the [main README](https://github.com/RmaNMetaverse/ComfyUI-Orchestrator-LAN#readme) explains how to connect real ComfyUI machines and run workflows.
+
+For a repeatable clean setup check that does not touch your normal fleet configuration, run `node examples/docs-smoke.mjs` from the repository root. It starts temporary ComfyFleet and mock servers, calls the state endpoint, checks a worker, and removes its temporary files.
+
+If a step fails, see [Troubleshooting](./troubleshooting).

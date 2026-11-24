@@ -1,0 +1,23 @@
+---
+id: troubleshooting
+slug: /troubleshooting/
+title: Troubleshooting the quickstart
+---
+
+# Troubleshooting the quickstart
+
+The clean setup check confirmed that an empty machine list is normal. The other cases follow from the server's error handling and setup requirements.
+
+| What you see | What to do |
+| --- | --- |
+| `node` is not recognized, or the version is below 20 | Install Node.js 20 or newer, reopen the terminal, and run `node --version` again. |
+| `EADDRINUSE` when starting ComfyFleet or the mock | Port `8787` or `8801` is already in use. Stop the other server, or start ComfyFleet with `node bin/cf.js web --port 8788` and use that port in the URL. |
+| The `/api/state` request cannot connect | Keep `npm start` running in its first terminal. Open `http://localhost:8787` to check the server, then retry the request. |
+| `config.machines` is `[]` | This is expected on a fresh setup. The state endpoint works before a worker is added. Start the mock and add it on the Machines tab if you want to test a worker. |
+| `configError` contains text | The configuration file could not be read. The API still returns HTTP 200 so the UI can show the error. Check the file path in `paths.fleet` and fix its JSON. |
+| `curl` prints unexpected formatting in Windows PowerShell | Use the `Invoke-RestMethod` command from the quickstart. PowerShell can treat `curl` differently from the curl program on macOS and Linux. |
+| The mock machine says it cannot connect | Check that `node tools/mock-comfy.js --port 8801` is still running and that the machine uses `127.0.0.1:8801`. |
+| The API explorer on this public site cannot call `localhost` | Use the terminal request from the quickstart. Browsers can block calls from an HTTPS site to a local HTTP server. |
+| The docs site build fails with `require.resolveWeak is not a function` | Keep `site/docusaurus.config.js` and `site/sidebars.js` in CommonJS format and do not add `"type": "module"` to `site/package.json`. This was fixed during the clean site build. |
+
+For real machines, the [README troubleshooting table](https://github.com/RmaNMetaverse/ComfyUI-Orchestrator-LAN#troubleshooting) covers firewalls, missing models, and workflow export errors.

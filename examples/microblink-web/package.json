@@ -1,0 +1,24 @@
+{
+  "name": "microblink-web-reader-example",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "copy:resources": "node copy-resources.mjs",
+    "predev": "npm run copy:resources",
+    "dev": "vite --host 127.0.0.1",
+    "prebuild": "npm run copy:resources",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@microblink/blinkid": "7.8.0"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vite": "7.3.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -1,4 +1,10 @@
 node_modules/
+site/build/
+site/.docusaurus/
+site/docs/api/
+examples/microblink-web/dist/
+examples/microblink-web/public/resources/
+examples/microblink-web/.env.local
 
 # per-user interface state (last workflow, overrides) - not shared
 config/ui-state.json
